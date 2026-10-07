@@ -201,6 +201,19 @@
           <span class="val" data-role="val">-.--</span>
           <button data-step="0.1">+.1</button><button data-step="1">+1</button>
         </div></div>
+      <div class="adj"><span class="tag">T</span>
+        <div class="stepper" data-obj="sim_pack_temp" data-dec="0" data-min="-40" data-max="100" data-current="25">
+          <button data-step="-10">-10</button><button data-step="-1">-1</button>
+          <span class="val" data-role="val">25</span>
+          <button data-step="1">+1</button><button data-step="10">+10</button>
+        </div></div>
+      <div class="adj"><span class="tag">S</span>
+        <div class="stepper" data-obj="sim_source_v" data-dec="1" data-min="0" data-max="30" data-current="13.2">
+          <button data-step="-1">-1</button><button data-step="-0.1">-.1</button>
+          <span class="val" data-role="val">13.2</span>
+          <button data-step="0.1">+.1</button><button data-step="1">+1</button>
+        </div></div>
+      <div class="charge-msg" style="display:block;">SIM SEED (Pack Temp C / Source V) - applied when Sim Cycle arms</div>
       <div class="btnrow">
         <button class="onoff off" id="outputBtn">OUTPUT  OFF</button>
       </div>
@@ -263,6 +276,8 @@
     'text_sensor/charge_status':'Charge Status',
     'number/set_voltage':'Set Voltage',
     'number/set_current':'Set Current',
+    'number/sim_pack_temp':'Sim Pack Temp',
+    'number/sim_source_v':'Sim Source V',
     'switch/output':'Output',
     'switch/charge':'Charge',
     'switch/sim_cycle':'Sim Cycle',
@@ -710,6 +725,8 @@
       ['switch', 'output'],
       ['number', 'set_voltage'],
       ['number', 'set_current'],
+      ['number', 'sim_pack_temp'],
+      ['number', 'sim_source_v'],
       ['sensor', 'output_voltage'],
       ['sensor', 'output_current']
     ];
@@ -764,6 +781,8 @@
       case 'switch/charge': swRender('charge', !!data.value); return;
       case 'switch/sim_cycle': swRender('sim_cycle', !!data.value); return;
       case 'number/set_voltage': setStepperVal('set_voltage', data.value); setrowV(data.value); return;
+      case 'number/sim_pack_temp': setStepperVal('sim_pack_temp', data.value); return;
+      case 'number/sim_source_v': setStepperVal('sim_source_v', data.value); return;
       case 'number/set_current': setStepperVal('set_current', data.value); setrowA(data.value); return;
     }
   }

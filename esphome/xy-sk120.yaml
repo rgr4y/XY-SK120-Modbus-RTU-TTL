@@ -467,7 +467,9 @@ switch:
             - script.stop: softstart_on
             - switch.turn_off: sk_onoff          # sim never drives output — force it off
             - lambda: |-
-                id(sim_v) = 12.6f; id(sim_i) = 0.0f; id(sim_t) = 25.0f; id(sim_vin) = 13.2f;
+                id(sim_v) = 12.6f; id(sim_i) = 0.0f;
+                id(sim_t)   = id(sim_t_num).state;
+                id(sim_vin) = id(sim_vin_num).state;
                 id(g_sim) = true; id(cj_run) = true; id(cj_stage) = 0;
                 id(cj_t0) = millis(); id(cj_stage_t0) = millis();
                 id(cj_taper_t0) = -1; id(cj_srclow_t0) = -1;
@@ -535,6 +537,32 @@ number:
     step: 0.001
     multiply: 1000
     skip_updates: 1     # see Set Voltage
+
+  # Sim seeds (web-settable guard testing): read at Sim Cycle arm.
+  - platform: template
+    name: "Sim Pack Temp"
+    id: sim_t_num
+    unit_of_measurement: "°C"
+    mode: box
+    optimistic: true
+    min_value: -40
+    max_value: 100
+    step: 1
+    initial_value: 25
+    set_action:
+      - lambda: 'id(sim_t) = x;'
+  - platform: template
+    name: "Sim Source V"
+    id: sim_vin_num
+    unit_of_measurement: "V"
+    mode: box
+    optimistic: true
+    min_value: 0
+    max_value: 30
+    step: 0.1
+    initial_value: 13.2
+    set_action:
+      - lambda: 'id(sim_vin) = x;'
 
 # ---- Lead-acid charge engine (carried from dps150 charge/engine.js) ---------
 # Stages: IDLE -> CC (bulk) -> CV (absorb) -> FLOAT (hold). Runs on-device every
