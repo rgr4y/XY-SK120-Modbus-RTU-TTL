@@ -163,6 +163,12 @@ globals:
   - {id: cj_taper_t0, type: int32_t,  restore_value: no, initial_value: '-1'}     # taper-began millis (-1 = null)
   - {id: cj_srclow_t0,type: int32_t,  restore_value: no, initial_value: '-1'}     # source-below-min millis (-1 = null), debounce
   - {id: cj_status,   type: std::string, restore_value: no, initial_value: '""'}  # fault/status text
+  # ---- dry-run sim: engine walks stages on synthetic inputs, output never fires ----
+  - {id: g_sim,    type: bool,  restore_value: no, initial_value: 'false'}  # sim mode — HARD-blocks all device writes
+  - {id: sim_v,    type: float, restore_value: no, initial_value: '12.6'}   # synthetic pack V
+  - {id: sim_i,    type: float, restore_value: no, initial_value: '0'}      # synthetic charge current
+  - {id: sim_t,    type: float, restore_value: no, initial_value: '25'}     # synthetic pack temp (seed hot/cold to test guards)
+  - {id: sim_vin,  type: float, restore_value: no, initial_value: '13.2'}   # synthetic source V (seed low to test depletion)
 
 # Output-enable soft-start. Target <= Vin+margin -> enable at target (buck, no
 # inrush). Target > Vin -> command Vin, enable, then step V_SET up to target.
@@ -426,11 +432,36 @@ switch:
     id: charge_sw
     optimistic: true
     turn_on_action:
-      - lambda: 'id(cj_run) = true; id(cj_stage) = 0; id(cj_status) = std::string("starting");'
+      - lambda: 'id(g_sim) = false; id(cj_run) = true; id(cj_stage) = 0; id(cj_status) = std::string("starting");'
     turn_off_action:
       - lambda: 'id(cj_run) = false; id(cj_stage) = 0; id(cj_status) = std::string("");'
       - script.stop: softstart_on
       - switch.turn_off: sk_onoff
+
+  # Dry-run the charge engine on synthetic inputs — walks IDLE->CC->CV->FLOAT in
+  # ~20s, output never fires. Seed sim_t / sim_vin first to exercise guards.
+  - platform: template
+    name: "Sim Cycle"
+    id: sim_sw
+    optimistic: true
+    turn_on_action:
+      - if:
+          condition:
+            lambda: 'return id(sk_onoff).state || (id(cj_run) && !id(g_sim));'
+          then:
+            # refuse while real output/charge is live — never shadow a real run
+            - lambda: 'id(sim_sw).publish_state(false); ESP_LOGW("sim", "refused: real output/charge active");'
+          else:
+            - script.stop: softstart_on
+            - switch.turn_off: sk_onoff          # sim never drives output — force it off
+            - lambda: |-
+                id(sim_v) = 12.6f; id(sim_i) = 0.0f; id(sim_t) = 25.0f; id(sim_vin) = 13.2f;
+                id(g_sim) = true; id(cj_run) = true; id(cj_stage) = 0;
+                id(cj_t0) = millis(); id(cj_stage_t0) = millis();
+                id(cj_taper_t0) = -1; id(cj_srclow_t0) = -1;
+                id(cj_status) = std::string("sim: starting");
+    turn_off_action:
+      - lambda: 'id(g_sim) = false; id(cj_run) = false; id(cj_stage) = 0; id(cj_status) = std::string("");'
 
 number:
   # User target voltage. The soft-start ramp READS this and never writes it, so
@@ -529,11 +560,12 @@ interval:
           const float OV_MARGIN = 1.03f, CV_EPS = 0.02f, NO_LOAD_A = 0.05f;
           const uint32_t NO_LOAD_MS = 3000, SETTLE_MS = 5000;
 
-          // inputs
-          float v = id(sk_vout).state;
-          float i = id(sk_iout).state;
-          float vin = id(sk_vin).state;
-          float t = id(sk_temp_ext).state;
+          // inputs — sim mode feeds synthetic values the engine believes are real
+          bool  sim = id(g_sim);
+          float v   = sim ? id(sim_v)   : id(sk_vout).state;
+          float i   = sim ? id(sim_i)   : id(sk_iout).state;
+          float vin = sim ? id(sim_vin) : id(sk_vin).state;
+          float t   = sim ? id(sim_t)   : id(sk_temp_ext).state;
           bool  tvalid = !isnan(t) && t < 150.0f;        // 888.8 = unwired NTC sentinel
           bool  cv = id(sk_cv).state;
           uint32_t now = millis();
@@ -559,7 +591,7 @@ interval:
             else if (stage == 1 && stageEl > NO_LOAD_MS && i < NO_LOAD_A) f = "no-load / open circuit";
             else if (stage != 3 && maxTotS > 0 && totEl / 1000.0f > maxTotS) f = "total time exceeded";
             if (f) {
-              id(sk_onoff).turn_off(); id(softstart_on).stop();
+              if (!sim) { id(sk_onoff).turn_off(); id(softstart_on).stop(); }
               id(cj_stage) = 5; id(cj_status) = std::string(f);
               return;
             }
@@ -567,7 +599,7 @@ interval:
             if (vin < ${src_min_v}) {
               if (id(cj_srclow_t0) < 0) id(cj_srclow_t0) = (int32_t) now;
               else if (now - (uint32_t) id(cj_srclow_t0) >= (uint32_t) (${src_low_dwell_s} * 1000)) {
-                id(sk_onoff).turn_off(); id(softstart_on).stop();
+                if (!sim) { id(sk_onoff).turn_off(); id(softstart_on).stop(); }
                 id(cj_stage) = 5; id(cj_status) = std::string("source depleted");
                 return;
               }
@@ -587,9 +619,9 @@ interval:
                 if (v < minV || v > maxV)   { id(cj_stage) = 5; id(cj_status) = std::string("pack V out of range"); break; }
                 if (v > absorbV * OV_MARGIN){ id(cj_stage) = 5; id(cj_status) = std::string("overvolt at start"); break; }
               }
-              id(v_target).make_call().set_value(absorbV).perform();   // target for the ramp
+              id(v_target).make_call().set_value(absorbV).perform();   // target (writes V_SET via on_value while off -> shows on device)
               id(set_current).make_call().set_value(chargeA).perform();
-              id(softstart_on).execute();                // ramp V_SET to absorb + enable output
+              if (!sim) id(softstart_on).execute();        // real: ramp V_SET + enable. sim: setpoints shown, output stays OFF
               id(cj_t0) = now; id(cj_stage_t0) = now; id(cj_taper_t0) = -1; id(cj_srclow_t0) = -1;
               id(cj_stage) = 1; id(cj_status) = std::string("CC (bulk)");
               break;
@@ -604,7 +636,7 @@ interval:
               if (i < taperA) {
                 if (id(cj_taper_t0) < 0) id(cj_taper_t0) = (int32_t) now;
                 else if (now - (uint32_t) id(cj_taper_t0) >= SETTLE_MS) {
-                  id(v_target).make_call().set_value(floatV).perform();    // lowering — write device directly, no ramp
+                  id(v_target).make_call().set_value(floatV).perform();    // lowering — direct, no ramp (shows float setpoint on device)
                   id(vset_dev).make_call().set_value(floatV).perform();
                   id(cj_stage) = 3; id(cj_stage_t0) = now; id(cj_taper_t0) = -1;
                   id(cj_status) = std::string("FLOAT");
@@ -616,4 +648,23 @@ interval:
             case 3:     // FLOAT: hold indefinitely (lead-acid maintenance)
             default:
               break;
+          }
+
+          // ---- sim pack model: evolve synthetic V/I so the engine walks the
+          // stages in tens of seconds. Runs AFTER the switch, on the new stage.
+          if (sim) {
+            switch (id(cj_stage)) {
+              case 1: id(sim_i) = chargeA;    id(sim_v) += 0.15f;  break; // CC: V climbs at I
+              case 2: id(sim_v) = absorbV;    id(sim_i) *= 0.75f;  break; // CV: I tapers
+              case 3:                                                     // FLOAT: hold briefly, then end the test
+                id(sim_v) = floatV; id(sim_i) = 0.1f;
+                if (now - id(cj_stage_t0) >= 5000) {
+                  id(cj_stage) = 4; id(cj_run) = false;                   // DONE — stops the engine (real float holds forever)
+                  id(cj_status) = std::string("sim: complete");
+                }
+                break;
+              default: break;                                            // IDLE/FAULT/DONE: hold
+            }
+            ESP_LOGI("sim", "stage=%d v=%.2f i=%.2f absorbV=%.2f taperA=%.2f status=%s",
+                     id(cj_stage), id(sim_v), id(sim_i), absorbV, taperA, id(cj_status).c_str());
           }
