@@ -140,8 +140,9 @@
   .stage-badge.st-float{ background:#12203a; color:#58a6ff; border-color:#58a6ff77; }
   .stage-badge.st-fault{ background:#2a0d0d; color:#ff6b6b; border-color:#ff4d4d99; }
   .temp-invalid{ background:#2a2008; color:#ffcf70; border:1px solid #a5700066; padding:2px 6px; border-radius:5px; }
-  .statuslog{ display:flex; flex-direction:column; align-items:flex-end; gap:1px; padding:2px 16px 0; font-family:var(--mono); font-size:12px; line-height:1.35; min-height:14px; }
-  .statuslog .s{ color:#7d8a97; white-space:nowrap; }
+  .statuslog{ display:flex; justify-content:flex-end; align-items:center; gap:12px; overflow:hidden; white-space:nowrap; padding:6px 16px 2px; font-family:var(--mono); font-size:12px; line-height:1.3; min-height:18px;
+    -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 56px); mask-image:linear-gradient(90deg,transparent 0,#000 56px); }
+  .statuslog .s{ color:#7d8a97; flex:0 0 auto; }
   .statuslog .s.done{ color:#5fd39a; }
   .statuslog .s.warn{ color:#ff6b6b; }
   .charge-msg.done{ color:#5fd39a; background:#0f2417; border:1px solid #2ea04366; }
@@ -842,7 +843,7 @@
   var statusHist = [];
   function chargeMsg(s){
     var t = (s || '').trim();
-    if(t && t !== curStatus){ statusHist.unshift(t); if(statusHist.length > 6) statusHist.pop(); }
+    if(t && t !== statusHist[0]){ statusHist.unshift(t); if(statusHist.length > 8) statusHist.pop(); }
     curStatus = t;
     renderStatus();
   }
@@ -851,12 +852,14 @@
       el('faultMsg').innerHTML = '<b></b><br>Output was shut off. Correct the condition, then dismiss to resume.';
       el('faultMsg').firstChild.textContent = curStatus || 'fault';
     }
+    // One horizontal row: newest pinned right (full opacity), older trail left and
+    // fade out, overflowing past the mask into nothing. Append oldest->newest.
     var box = el('statusLog');
     box.innerHTML = '';
-    for(var i=0; i<statusHist.length; i++){
-      var d = document.createElement('div');   // textContent only — no injection
+    for(var i = statusHist.length - 1; i >= 0; i--){
+      var d = document.createElement('span');   // textContent only — no injection
       d.className = 's' + (i === 0 ? (curStage === 'FAULT' ? ' warn' : curStage === 'DONE' ? ' done' : '') : '');
-      d.style.opacity = Math.max(0.12, 1 - i * 0.22).toFixed(2);
+      d.style.opacity = Math.max(0.1, 1 - i * 0.26).toFixed(2);
       d.textContent = statusHist[i];
       box.appendChild(d);
     }
