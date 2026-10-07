@@ -19,7 +19,7 @@
 - The panel keys entities by their web_server v3 **`name:` string** (URL-encoded), NOT `object_id`. Exact names in §2 of the spec.
 - `web_server: include_internal: false` is set (`xy-sk120.yaml:84-85`): internal entities (`sk_onoff`, `vset_dev`, `sk_r06`–`sk_r10`) are NOT on the stream — the panel must never reference them.
 - Handlers register with `add_handler()` (auth-respecting), not `add_handler_without_auth()`. Auth is off (LAN-only) but keep the auth-respecting call.
-- Two `esphome: on_boot:` entries after merge: existing boot-policy at **priority -100**, handler-registration at **priority -99** (both late, after web_server base is up).
+- Two `esphome: on_boot:` entries after merge: existing boot-policy at **priority -100**, handler-registration at **priority 300** (RULING 4: -99 lost `/` to the native root handler — it registers first; 300 is D3806's proven value and the only one that passes the `/`→`/panel` gate).
 - Do NOT restate `web_server:` auth/port/version in `web.yaml` — `common.yaml` owns those; `web.yaml` adds only `local: true` + includes + on_boot.
 
 ## Review Focus
@@ -482,7 +482,7 @@ git commit -m "feat(esphome): web-settable sim seeds (Sim Pack Temp / Sim Source
 - [ ] **Step 1: Confirm the on_boot merge produced two distinct entries**
 
 Run: `cd esphome && esphome config xy-sk120.yaml | grep -A2 -iE 'on_boot|priority'`
-Expected: both `priority: -100` (boot policy) and `priority: -99` (handler registration) appear — the package merge concatenated the lists, no collision.
+Expected: both `priority: -100` (boot policy) and `priority: 300` (handler registration, per RULING 4) appear — the package merge concatenated the lists, no collision.
 
 - [ ] **Step 2: Verify build-hash hot-reload**
 
