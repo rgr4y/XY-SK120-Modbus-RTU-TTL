@@ -21,9 +21,28 @@ substitutions:
   modbus_addr: "1"         # REG_SLAVE_ADDR factory default
   poll_ms: "500ms"         # telemetry poll (Vin + all live regs)
 
-  # -- Setpoint UI clamps (device enforces its own limits; VERIFY vs SK120 spec)
-  vset_max: "30.0"
-  iset_max: "12.0"
+  # -- Setpoint UI clamps (device enforces its own limits)
+  vset_max: "36.5"         # verified on-device accepts up to 36.5 V
+  iset_max: "12.0"         # VERIFY vs SK120 spec
+
+  # -- Output-enable soft-start (avoids boost inrush collapsing a weak input
+  # like a PD trigger). On enable with target > Vin: command Vin, enable, then
+  # step V_SET up. Tune step/interval to your input's inrush tolerance.
+  ss_step: "0.5"           # V per step
+  ss_interval: "150ms"     # time between steps
+  ss_margin: "1.0"         # V; target within Vin+margin = no ramp (buck region)
+
+  # -- Lead-acid charge engine (SET per pack before charging a real battery) --
+  # Carried from dps150 charge/profiles.js (leadacid) + engine.js state machine.
+  cells: "6"               # 12V pack = 6 cells (24V = 12)
+  capacity_ah: "7"         # pack Ah — sets taper + total-time ceiling
+  charge_a: "1.0"          # bulk/CC current (A), clamped to iset_max
+  absorb_v_cell: "2.40"    # AGM absorb 2.40; flooded ~2.45
+  float_v_cell: "2.25"     # AGM/flooded float
+  taper_c: "0.02"          # CV->FLOAT taper = taper_c * capacity_ah (A)
+  temp_min: "-10"          # cold inhibit (C)
+  temp_max: "50"           # hot abort (C)
+  tempcomp_mv: "-4"        # mV/C/cell off 25C ref (negative = raise V when cold)
 
 packages:
   base: !include common.yaml
@@ -33,6 +52,11 @@ esp32:
   # C3 supports the Arduino framework (ESPHome default) — no esp-idf needed.
   # XIAO ESP32-C3 external u.FL antenna is hardware-selected (no GPIO switch,
   # unlike the C6). Switched off the C6 for WiFi stability.
+
+# Override common.yaml's include_internal: hide internal plumbing (sk_onoff raw
+# bit, bridge regs sk_r06–sk_r10) from the web UI.
+web_server:
+  include_internal: false
 
 uart:
   id: uart_modbus
@@ -57,6 +81,49 @@ modbus_controller:
     # below — that makes 0x02–0x12 contiguous -> ONE FC03 read. (register_count
     # does NOT merge defined sensors across a gap; verified on-device.) V_SET/
     # I_SET (0x00–0x01) poll as their own small range; model/version skip:600.
+
+globals:
+  - id: g_target          # captured V_SET target for the soft-start ramp
+    type: float
+    restore_value: no
+    initial_value: '0'
+  # ---- charge engine state ----
+  - {id: cj_run,      type: bool,     restore_value: no, initial_value: 'false'}  # Charge switch on
+  - {id: cj_stage,    type: int,      restore_value: no, initial_value: '0'}      # 0 IDLE 1 CC 2 CV 3 FLOAT 4 DONE 5 FAULT
+  - {id: cj_t0,       type: uint32_t, restore_value: no, initial_value: '0'}      # charge start millis
+  - {id: cj_stage_t0, type: uint32_t, restore_value: no, initial_value: '0'}      # stage start millis
+  - {id: cj_taper_t0, type: int32_t,  restore_value: no, initial_value: '-1'}     # taper-began millis (-1 = null)
+  - {id: cj_status,   type: std::string, restore_value: no, initial_value: '""'}  # fault/status text
+
+# Output-enable soft-start. Target <= Vin+margin -> enable at target (buck, no
+# inrush). Target > Vin -> command Vin, enable, then step V_SET up to target.
+script:
+  - id: softstart_on
+    mode: restart          # re-enable restarts the ramp cleanly
+    then:
+      - lambda: 'id(g_target) = id(set_voltage).state;'
+      - if:
+          condition:
+            lambda: 'return id(g_target) <= id(sk_vin).state + ${ss_margin};'
+          then:
+            - switch.turn_on: sk_onoff
+          else:
+            - number.set:
+                id: set_voltage
+                value: !lambda 'return id(sk_vin).state;'
+            - delay: ${ss_interval}
+            - switch.turn_on: sk_onoff
+            - delay: ${ss_interval}
+            - while:
+                condition:
+                  lambda: 'return id(set_voltage).state < id(g_target) - 0.001;'
+                then:
+                  - number.set:
+                      id: set_voltage
+                      value: !lambda |-
+                        float nv = id(set_voltage).state + ${ss_step};
+                        return nv > id(g_target) ? id(g_target) : nv;
+                  - delay: ${ss_interval}
 
 # ---- Telemetry (FC03 holding reads) ----------------------------------------
 sensor:
@@ -178,6 +245,7 @@ binary_sensor:
   - platform: modbus_controller
     modbus_controller_id: sk120
     name: "CV Mode"          # REG_CVCC 0x11: 1 = CV, 0 = CC
+    id: sk_cv
     register_type: holding
     address: 0x0011
     bitmask: 1
@@ -191,21 +259,49 @@ binary_sensor:
 
 # ---- Controls (FC06 holding writes) ----------------------------------------
 switch:
+  # Raw REG_ONOFF bit — internal; driven by the Output switch via soft-start.
   - platform: modbus_controller
     modbus_controller_id: sk120
-    name: "Output Enable"    # REG_ONOFF 0x12 — SAFETY: drives live output
+    id: sk_onoff
+    internal: true
     register_type: holding
     address: 0x0012
     bitmask: 1
+
+  # User-facing output control. ON runs the soft-start; OFF kills it immediately.
+  - platform: template
+    name: "Output"           # SAFETY: drives live output
+    id: output_sw
+    lambda: 'return id(sk_onoff).state;'   # reflect actual device state
+    turn_on_action:
+      - script.execute: softstart_on
+    turn_off_action:
+      - lambda: 'id(cj_run) = false;'   # manual output-off aborts any charge
+      - script.stop: softstart_on
+      - switch.turn_off: sk_onoff
+
+  # Lead-acid charge: ON starts the engine (see interval tick); OFF kills it.
+  - platform: template
+    name: "Charge"          # SAFETY: runs the pack charger (CC/CV/FLOAT)
+    id: charge_sw
+    optimistic: true
+    turn_on_action:
+      - lambda: 'id(cj_run) = true; id(cj_stage) = 0; id(cj_status) = std::string("starting");'
+    turn_off_action:
+      - lambda: 'id(cj_run) = false; id(cj_stage) = 0; id(cj_status) = std::string("");'
+      - script.stop: softstart_on
+      - switch.turn_off: sk_onoff
 
 number:
   - platform: modbus_controller
     modbus_controller_id: sk120
     name: "Set Voltage"      # REG_V_SET 0x00, stores V×100
+    id: set_voltage
     register_type: holding
     address: 0x0000
     value_type: U_WORD
     unit_of_measurement: "V"
+    mode: box                # free numeric input box (not slider)
     min_value: 0
     max_value: ${vset_max}
     step: 0.01
@@ -215,12 +311,124 @@ number:
   - platform: modbus_controller
     modbus_controller_id: sk120
     name: "Set Current"      # REG_I_SET 0x01, stores A×1000
+    id: set_current
     register_type: holding
     address: 0x0001
     value_type: U_WORD
     unit_of_measurement: "A"
+    mode: box                # free numeric input box (not slider)
     min_value: 0
     max_value: ${iset_max}
     step: 0.001
     multiply: 1000
     skip_updates: 120   # see Set Voltage
+
+# ---- Lead-acid charge engine (carried from dps150 charge/engine.js) ---------
+# Stages: IDLE -> CC (bulk) -> CV (absorb) -> FLOAT (hold). Runs on-device every
+# 1s, independent of any web page. Output is enabled through the soft-start.
+text_sensor:
+  - platform: template
+    name: "Charge Stage"
+    id: charge_stage_text
+    update_interval: 1s
+    lambda: |-
+      switch (id(cj_stage)) {
+        case 1: return {"CC (bulk)"};
+        case 2: return {"CV (absorb)"};
+        case 3: return {"FLOAT"};
+        case 4: return {"DONE"};
+        case 5: return {"FAULT"};
+        default: return {"IDLE"};
+      }
+  - platform: template
+    name: "Charge Status"
+    id: charge_status_text
+    update_interval: 1s
+    lambda: 'return id(cj_status);'
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (!id(cj_run)) return;                       // engine off
+
+          const int   CELLS  = ${cells};
+          const float CAP    = ${capacity_ah};
+          const float VCLAMP = ${vset_max};
+          const float ICLAMP = ${iset_max};
+          const float OV_MARGIN = 1.03f, CV_EPS = 0.02f, NO_LOAD_A = 0.05f;
+          const uint32_t NO_LOAD_MS = 3000, SETTLE_MS = 5000;
+
+          // inputs
+          float v = id(sk_vout).state;
+          float i = id(sk_iout).state;
+          float t = id(sk_temp_ext).state;
+          bool  tvalid = !isnan(t) && t < 150.0f;        // 888.8 = unwired NTC sentinel
+          bool  cv = id(sk_cv).state;
+          uint32_t now = millis();
+
+          // derived (temp-comp recomputed each tick)
+          float tc = tvalid ? (${tempcomp_mv} / 1000.0f) * (t - 25.0f) : 0.0f;
+          float absorbV = fminf((${absorb_v_cell} + tc) * CELLS, VCLAMP);
+          float floatV  = fminf((${float_v_cell}  + tc) * CELLS, VCLAMP);
+          float chargeA = fminf((float) ${charge_a}, ICLAMP);
+          float taperA  = fminf(${taper_c} * CAP, chargeA * 0.2f);
+
+          int stage = id(cj_stage);
+          uint32_t stageEl = now - id(cj_stage_t0);
+          uint32_t totEl   = now - id(cj_t0);
+          float maxTotS = chargeA > 0 ? (CAP / chargeA) * 3600.0f * 1.5f : 0.0f;
+
+          // per-tick guards while active (CC/CV/FLOAT)
+          if (stage == 1 || stage == 2 || stage == 3) {
+            const char* f = nullptr;
+            if (tvalid && t > ${temp_max}) f = "hot abort";
+            else if (v > absorbV * OV_MARGIN) f = "overvoltage";
+            else if (stage == 1 && stageEl > NO_LOAD_MS && i < NO_LOAD_A) f = "no-load / open circuit";
+            else if (stage != 3 && maxTotS > 0 && totEl / 1000.0f > maxTotS) f = "total time exceeded";
+            if (f) {
+              id(sk_onoff).turn_off(); id(softstart_on).stop();
+              id(cj_stage) = 5; id(cj_status) = std::string(f);
+              return;
+            }
+          }
+
+          switch (stage) {
+            case 0: {   // IDLE -> start
+              if (tvalid && t < ${temp_min}) { id(cj_status) = std::string("cold inhibit"); break; }
+              if (tvalid && t > ${temp_max}) { id(cj_stage) = 5; id(cj_status) = std::string("hot at start"); break; }
+              // pack-bounds only when terminal V is actually sensed (XY reads ~0 output-off)
+              if (v > 0.5f) {
+                float minV = 1.7f * CELLS, maxV = 2.6f * CELLS;
+                if (v < minV || v > maxV)   { id(cj_stage) = 5; id(cj_status) = std::string("pack V out of range"); break; }
+                if (v > absorbV * OV_MARGIN){ id(cj_stage) = 5; id(cj_status) = std::string("overvolt at start"); break; }
+              }
+              id(set_voltage).make_call().set_value(absorbV).perform();
+              id(set_current).make_call().set_value(chargeA).perform();
+              id(softstart_on).execute();                // ramp V + enable output
+              id(cj_t0) = now; id(cj_stage_t0) = now; id(cj_taper_t0) = -1;
+              id(cj_stage) = 1; id(cj_status) = std::string("CC (bulk)");
+              break;
+            }
+            case 1:     // CC bulk -> CV at absorb
+              if (v >= absorbV - CV_EPS || cv) {
+                id(cj_stage) = 2; id(cj_stage_t0) = now; id(cj_taper_t0) = -1;
+                id(cj_status) = std::string("CV (absorb)");
+              }
+              break;
+            case 2:     // CV absorb -> FLOAT when current tapers for the dwell
+              if (i < taperA) {
+                if (id(cj_taper_t0) < 0) id(cj_taper_t0) = (int32_t) now;
+                else if (now - (uint32_t) id(cj_taper_t0) >= SETTLE_MS) {
+                  id(set_voltage).make_call().set_value(floatV).perform();
+                  id(cj_stage) = 3; id(cj_stage_t0) = now; id(cj_taper_t0) = -1;
+                  id(cj_status) = std::string("FLOAT");
+                }
+              } else {
+                id(cj_taper_t0) = -1;
+              }
+              break;
+            case 3:     // FLOAT: hold indefinitely (lead-acid maintenance)
+            default:
+              break;
+          }
