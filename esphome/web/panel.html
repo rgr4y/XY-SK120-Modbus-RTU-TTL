@@ -1009,6 +1009,7 @@
       _logStick = (logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight) < 40;
     });
 
+    el('faultDismiss').addEventListener('click', dismissFault);
     var ob = el('outputBtn');   // controls arrive in Task 3
     if(ob) ob.addEventListener('click', toggleOutput);
   }
