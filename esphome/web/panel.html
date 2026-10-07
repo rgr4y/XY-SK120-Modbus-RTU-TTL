@@ -140,10 +140,11 @@
 </head>
 <body>
 <div class="wrap">
+  <!-- master STOP: outside every view so it is always visible/clickable (fault lock only affects #psu) -->
+  <button class="stop" id="stopBtn">STOP</button>
 
   <!-- ===== FACE VIEW ===== -->
   <div class="psu active" id="psu">
-    <button class="stop" id="stopBtn">STOP</button>
     <div class="topbar">
       <span class="title">XY-SK120</span>
       <span class="actions">
@@ -988,7 +989,9 @@
     valEl.innerHTML = '<input type="number" step="any" value="' + cur + '">';
     var input = valEl.querySelector('input');
     input.focus(); input.select();
+    var cancelled = false;
     function commit(){
+      if(cancelled) return;   // Escape removes the input, which can fire blur
       var v = parseFloat(input.value);
       if(isNaN(v)) v = parseFloat(cur);
       v = clamp(round(v, dec), min, max);
@@ -1006,7 +1009,7 @@
     input.addEventListener('blur', commit);
     input.addEventListener('keydown', function(e){
       if(e.key === 'Enter'){ input.blur(); }
-      if(e.key === 'Escape'){ valEl.textContent = cur; }
+      if(e.key === 'Escape'){ cancelled = true; cancelPost('number', obj); valEl.textContent = cur; }
     });
   }
 
