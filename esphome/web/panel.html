@@ -135,6 +135,12 @@
   .stop:active{ transform:translateY(2px); box-shadow:0 2px 0 #4a0806; }
   .charge-msg{ text-align:center; font-family:var(--mono); font-size:13px; font-weight:700; padding:9px; border-radius:8px; }
   .charge-msg.warn{ color:#ffcf70; background:#2a2008; border:1px solid #a5700066; }
+  .charge-msg.dim{ color:var(--dim); font-weight:400; }
+  .stage-badge.st-idle{ background:#1c2128; color:#9aa4b2; border-color:#6e768155; }
+  .stage-badge.st-cc{ background:#2a2008; color:#ffcf70; border-color:#a5700099; }
+  .stage-badge.st-cv,.stage-badge.st-done{ background:#0f2417; color:#5fd39a; border-color:#2ea04399; }
+  .stage-badge.st-float{ background:#12203a; color:#58a6ff; border-color:#58a6ff77; }
+  .stage-badge.st-fault{ background:#2a0d0d; color:#ff6b6b; border-color:#ff4d4d99; }
   .charge-msg.done{ color:#5fd39a; background:#0f2417; border:1px solid #2ea04366; }
 </style>
 </head>
@@ -787,35 +793,30 @@
     cv.className = isCV ? 'cv cv-on' : 'cv cv-off';
     cc.className = isCV ? 'cc cc-off' : 'cc cc-on';
   }
-  function chargeStage(stateStr){
+  // Exact device strings (xy-sk120.yaml). Unknown text falls back to grey.
+  var STAGE_CLS = {'IDLE':'st-idle','CC (bulk)':'st-cc','CV (absorb)':'st-cv','FLOAT':'st-float','DONE':'st-done','FAULT':'st-fault'};
+  var curStage = '', curStatus = '';
+  function chargeStage(s){
+    var prev = curStage;
+    curStage = (s || '').trim();
     var badge = el('stageBadge');
-    badge.textContent = stateStr || 'Idle';
+    badge.textContent = curStage || 'Idle';
+    badge.className = 'in stage-badge ' + (STAGE_CLS[curStage] || 'st-idle');
+    if(curStage === 'FAULT'){
+      if(prev !== 'FAULT') showFault('⚠ CHARGE FAULT', '', 'charge', ' · charger');  // once per entry; Dismiss sticks
+    } else if(faultSource === 'charge') clearAllOverlays();
+    renderStatus();
   }
-
-  // Charger status. Complete -> green banner. Faults -> the red dismissible
-  // fault card. Normal charging/float is quiet — the stage badge covers it.
-  function chargeMsg(s){
+  // Charge Status free text, passed through raw (never enumerated here).
+  function chargeMsg(s){ curStatus = (s || '').trim(); renderStatus(); }
+  function renderStatus(){
     var banner = el('chargeMsg');
-    s = (s || '').trim();
-    var quiet = !s || /^Charging/i.test(s) || /^Float$/i.test(s);
-    if(quiet){
-      banner.style.display = 'none';
-      if(faultSource === 'charge') clearAllOverlays();   // charging resumed -> drop the card
-      return;
-    }
-    if(/complete/i.test(s)){
-      banner.textContent = '✓ ' + s;
-      banner.className = 'charge-msg done';
-      banner.style.display = '';
-      if(faultSource === 'charge') clearAllOverlays();
-      return;
-    }
-    banner.style.display = 'none';
-    var title = /no load|open/i.test(s) ? '⚠ NO LOAD'
-              : /overcurrent/i.test(s)  ? '⚠ OVERCURRENT'
-              : /source/i.test(s)       ? '⚠ SOURCE OUT OF WINDOW'
-              : '⚠ CHARGE FAULT';
-    showFault(title, '<b>' + s + '</b><br>Output was shut off. Correct the condition, then dismiss to resume.', 'charge', ' · charger');
+    if(faultSource === 'charge') el('faultMsg').innerHTML = '<b></b><br>Output was shut off. Correct the condition, then dismiss to resume.';
+    if(faultSource === 'charge') el('faultMsg').firstChild.textContent = curStatus || 'fault';
+    var show = curStatus && !(curStage === 'FAULT' && faultShown);
+    banner.style.display = show ? '' : 'none';
+    banner.textContent = curStatus;
+    banner.className = 'charge-msg' + (curStage === 'DONE' ? ' done' : curStage === 'FAULT' ? ' warn' : ' dim');
   }
 
   // Switch toggles (Output / Charge / Sim Cycle). Render + confirm-poll.
