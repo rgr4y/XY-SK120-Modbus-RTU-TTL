@@ -1,8 +1,1031 @@
-<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>XY-SK120</title></head>
-<body style="font-family:monospace;background:#0d1117;color:#e6edf3">
-<h1>XY-SK120 panel</h1>
-<p>build <code>__PANEL_BUILD_HASH__</code></p>
-<a href="/esphome">native</a>
-</body></html>
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>XY-SK120 Panel</title>
+<style>
+  :root{color-scheme:dark;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--bg:#0d1117;--fg:#e6edf3;--txt:#c9d1d9;--muted:#8b949e;--dim:#6e7681;--v:#2ea043;--a:#ffb000;--w:#58a6ff;--hz:#ff4d4d;--hz2:#ff8080;}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;-moz-user-select:none;user-select:none;}
+  input,textarea{-webkit-user-select:text;-moz-user-select:text;user-select:text;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);font-family:var(--mono);}
+  body{padding:18px 12px 40px;}
+  .wrap{max-width:560px;margin:0 auto;}
+  .build-footer{margin-top:14px;text-align:center;color:var(--dim);font-size:10px;letter-spacing:.04em;overflow-wrap:anywhere;}
+  button{font-family:inherit;}
+
+  /* ===== FACE ===== */
+  .psu{ background:linear-gradient(180deg,#3a3f45,#22262b); border-radius:16px; padding:18px; box-shadow:0 10px 40px #000a, inset 0 1px 0 #ffffff22, inset 0 -2px 6px #0008; border:1px solid #000; }
+  .topbar{display:flex;align-items:center;margin-bottom:12px;}
+  .topbar .title{color:var(--muted);font-size:18px;letter-spacing:.12em;text-transform:uppercase;}
+  .topbar .actions{margin-left:auto;display:flex;align-items:center;gap:8px;}
+  .linkdot{ width:8px;height:8px;border-radius:50%;background:var(--v);box-shadow:0 0 6px #2ea043aa;margin-right:2px;transition:background .2s;flex-shrink:0; }
+  .linkdot.off{ background:var(--hz);box-shadow:0 0 6px #ff4d4daa;animation:linkblink 1s ease-in-out infinite; }
+  @keyframes linkblink{ 50%{ opacity:.25; } }
+  .gearbtn{background:linear-gradient(180deg,#30363d,#22262b);border:1px solid #000;border-radius:9px;color:var(--txt);width:34px;height:34px;font-size:16px;cursor:pointer;}
+
+  /* ===== DIAGNOSTICS (dynamic, populated from the SSE stream) ===== */
+  .diagval{ margin-left:12px; color:var(--txt); font-family:var(--mono); font-size:13px; text-align:right; overflow-wrap:anywhere; min-width:0; }
+  .diagval.on{ color:var(--v); font-weight:700; }
+  .diagspark{ width:220px; height:24px; flex-shrink:0; margin-left:auto; }
+  .diagspark svg{ width:100%; height:100%; display:block; }
+  .diagspark + .diagval{ margin-left:12px; }
+  .diagbtn{ margin-left:10px; background:linear-gradient(180deg,#30363d,#22262b); color:var(--muted); border:1px solid #000; border-radius:7px; padding:6px 12px; font-weight:700; font-size:12px; cursor:pointer; }
+  .diagbtn:active{ background:#3a4149; }
+  .sec-title.diag{ color:#8fa89a; }
+
+  /* ===== LOG CONSOLE (streamed from /events "log" lines) ===== */
+  .logsbtn{ background:linear-gradient(180deg,#30363d,#22262b); color:#8fb6f0; font-weight:700; font-size:13px; border:1px solid #1f6feb44; border-radius:9px; padding:8px 14px; cursor:pointer; }
+  .logsbtn:active{ background:#22262b; }
+  .logwrap{ background:#080b0e; border:1px solid #000; border-radius:10px; padding:10px 12px; height:62vh; overflow:auto; box-shadow:inset 0 1px 4px #000a; }
+  /* Logs escapes the 560px column: centered 90vw x 90vh modal (scrim via box-shadow) */
+  #logs.active{ position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); width:90vw; height:90vh; max-width:none; margin:0; display:flex; flex-direction:column; z-index:20; box-shadow:0 0 0 100vmax #000b, 0 20px 60px #000c; }
+  #logs.active .logwrap{ flex:1 1 auto; height:auto; min-height:0; }
+  @media (max-width:600px){
+    #logs.active{ width:100vw; height:100vh; height:100dvh; top:0; left:0; transform:none; border-radius:0; border:0; padding:12px; box-shadow:none; }
+  }
+  .logline{ font-family:var(--mono); font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--txt); margin:0; }
+  .logline.l-E{ color:#ff6b6b; } .logline.l-W{ color:var(--a); } .logline.l-I{ color:#58d364; }
+  .logline.l-C{ color:var(--w); } .logline.l-D{ color:var(--muted); } .logline.l-V,.logline.l-VV{ color:var(--dim); }
+  .logempty{ color:var(--dim); font-family:var(--mono); font-size:12px; }
+
+  .stage-wrap{position:relative;}
+  .glass{ position:relative; background:radial-gradient(120% 120% at 50% 0%, #0b1a14 0%, #050807 70%); border-radius:10px; padding:18px 22px; border:1px solid #000; box-shadow:inset 0 2px 14px #000d, inset 0 0 0 2px #0f1512; overflow:hidden; }
+  .glass::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,#ffffff10,transparent 30%);pointer-events:none;}
+
+  .setrow{ display:flex; justify-content:space-between; font-family:var(--mono); font-size:14px; letter-spacing:.12em; color:#5f6d64; margin-bottom:6px; flex-wrap:wrap; gap:4px;}
+  .setrow b{ color:#8fa89a; font-weight:600; }
+
+  .digits{ font-family:var(--mono); font-weight:800; letter-spacing:.02em; line-height:1.02; }
+  .line{ display:flex; align-items:baseline; margin-bottom:4px; }
+  .line .num{ font-size:74px; }
+  .line .u{ font-size:26px; margin-left:auto; align-self:flex-end; padding-bottom:8px; opacity:.85; }
+  .v{ color:var(--v); text-shadow:0 0 14px #2ea04366; }
+  .a{ color:var(--a); text-shadow:0 0 14px #ffb00066; }
+  .w{ color:var(--w); text-shadow:0 0 14px #58a6ff66; }
+  .w.num{ font-size:52px; }
+
+  /* inline sparkline per readout (fed from SSE history; hover pauses + inspects) */
+  .line .spark{ flex:1 1 0; min-width:0; align-self:center; height:54px; margin:0 16px; position:relative; cursor:crosshair; }
+  .line .spark svg{ width:100%; height:100%; display:block; overflow:visible; }
+  .spark-tip{ position:absolute; top:-4px; transform:translateX(-50%); background:#0d1117ee; border:1px solid #30363d; border-radius:6px; padding:2px 7px; font-family:var(--mono); font-size:11px; color:var(--txt); white-space:nowrap; pointer-events:none; display:none; z-index:6; }
+
+  .statusbar{ display:flex; align-items:center; gap:6px; margin-top:18px; padding-top:12px; border-top:1px solid #10201a; font-family:var(--mono); font-size:13px; color:#5f6d64; flex-wrap:wrap; }
+  .in{ letter-spacing:.1em; }
+  .hazard{ color:var(--hz) !important; text-shadow:0 0 10px #ff4d4d55; font-weight:700; }
+  .cv,.cc{ padding:3px 7px; border-radius:5px; font-size:12px; font-weight:700; letter-spacing:.03em; }
+  .cv{ margin-left:auto; }
+  .cv-on{ background:#0f3d2a; color:var(--v); border:1px solid #2ea04366; }
+  .cc-on{ background:#3d2d0f; color:var(--a); border:1px solid #ffb00066; }
+  .cv-off,.cc-off{ background:#1a1d1a; color:#3a463f; border:1px solid #222; }
+  .stage-badge{ background:#12203a; color:var(--w); border:1px solid #58a6ff55; }
+
+  .ctrls{ margin-top:16px; display:flex; flex-direction:column; gap:12px; }
+  .adj{ display:flex; align-items:center; gap:8px; }
+  .adj .tag{ width:26px; font-family:var(--mono); font-weight:800; font-size:20px; text-align:center;}
+  .adj .tag.v{color:var(--v)} .adj .tag.a{color:var(--a)}
+  .stepper{ flex:1; display:flex; align-items:stretch; background:#15181c; border-radius:10px; border:1px solid #000; box-shadow:inset 0 1px 3px #000; overflow:hidden; }
+  .stepper button{ width:0; flex:1 1 0; background:linear-gradient(180deg,#2f353b,#20242a); color:var(--txt); border:none; border-right:1px solid #000; font-size:14px; cursor:pointer; font-weight:700; padding:14px 0; }
+  .stepper button:last-child{border-right:none;}
+  .stepper button:active{ background:#3a4149; }
+  .stepper .val{ flex:2 1 0; text-align:center; font-family:var(--mono); font-size:22px; font-weight:700; color:var(--fg); padding:10px 2px; border-left:1px solid #000; border-right:1px solid #000; background:none; cursor:text; }
+  .stepper .val input{width:100%;background:transparent;border:none;color:var(--fg);font:inherit;text-align:center;outline:none;}
+
+  .btnrow{ display:flex; gap:12px; margin-top:4px; }
+  .onoff{ flex:2; color:#fff; font-weight:800; letter-spacing:.1em; font-size:18px; border-radius:12px; padding:16px; cursor:pointer; }
+  .onoff.on{ background:linear-gradient(180deg,var(--v),#1a7a30); border:1px solid #0a3; box-shadow:0 4px 0 #0a3d1c, 0 6px 12px #0008; animation:on-glow 2.4s ease-in-out infinite; }
+  /* OUTPUT-ON life sign. Swap the keyframes below to try another (see 5 options). */
+  @keyframes on-glow{ 0%,100%{ box-shadow:0 4px 0 #0a3d1c,0 6px 12px #0008,0 0 0 0 #2ea04300; } 50%{ box-shadow:0 4px 0 #0a3d1c,0 6px 12px #0008,0 0 20px 2px #2ea043aa; } }
+  @keyframes on-breathe{ 0%,100%{ transform:scale(1); } 50%{ transform:scale(1.018); } }
+  @keyframes on-bright{ 0%,100%{ filter:brightness(1); } 50%{ filter:brightness(1.16); } }
+  @keyframes on-edge{ 0%,100%{ border-color:#0a3; } 50%{ border-color:#4fe07a; } }
+  @media (prefers-reduced-motion:reduce){ .onoff.on{ animation:none; } }
+  /* Output OFF = neutral grey (was amber, read as "armed/on"). Green only when actually ON. */
+  .onoff.off{ background:linear-gradient(180deg,#3a4048,#282c32); border:1px solid #10141a; box-shadow:0 4px 0 #14181e, 0 6px 12px #0008; color:#c9d1d9;}
+
+  /* FAULT CARD */
+  .fault{ position:absolute; inset:0; background:radial-gradient(120% 120% at 50% 0%, #2a0d0d 0%, #120404 70%); border-radius:10px; border:1px solid #ff4d4d55; box-shadow:inset 0 0 0 2px #3a0f0f, 0 0 24px #ff000033; display:none; flex-direction:column; padding:20px 22px; z-index:5;}
+  .fault h3{ color:var(--hz2); font-size:22px; letter-spacing:.06em; margin:0 0 4px; display:flex; align-items:center; gap:10px;}
+  .fault .when{ font-family:var(--mono); font-size:12px; color:#a06060; margin-bottom:12px;}
+  .fault p{ color:#e6c9c9; font-size:15px; line-height:1.5; margin:0 0 auto;}
+  .fault .dismiss{ align-self:flex-end; background:#3a1414; color:#ff9b9b; border:1px solid #ff4d4d55; border-radius:8px; padding:10px 20px; font-weight:700; cursor:pointer; }
+
+  .psu.show-fault .fault{ display:flex; }
+
+  /* ===== CONFIG ===== */
+  .cfg{ display:none; background:linear-gradient(180deg,#3a3f45,#22262b); border-radius:16px; padding:16px; box-shadow:0 10px 40px #000a, inset 0 1px 0 #ffffff22; border:1px solid #000; font-family:var(--mono);}
+  .cfg.active{display:block;}
+  .psu.active{display:block;}
+  .psu{display:none;}
+  .cfg-head{ display:flex; align-items:center; margin-bottom:12px; }
+  .cfg-head h3{ margin:0; color:var(--fg); font-size:18px; letter-spacing:.04em;}
+  .cfg-head .done{ margin-left:auto; background:linear-gradient(180deg,var(--v),#1a7a30); color:#fff; border:1px solid #0a3; border-radius:9px; padding:8px 18px; font-weight:800; cursor:pointer;}
+  .sec{ background:#12161b; border:1px solid #000; border-radius:10px; padding:6px 12px; margin-bottom:10px; box-shadow:inset 0 1px 3px #0006;}
+  .sec-title{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; padding:8px 2px 4px; display:flex; align-items:center; gap:8px; color:var(--w);}
+  .field{ display:flex; align-items:center; padding:9px 2px; border-top:1px solid #1c2128;}
+  .field:first-of-type{border-top:none;}
+  .field .name{ flex:1; color:var(--txt); font-size:14px;}
+  .field .name small{ display:block; color:var(--dim); font-size:11px; letter-spacing:0;}
+  .field .set{ display:flex; align-items:stretch; background:var(--bg); border:1px solid #000; border-radius:8px; overflow:hidden;}
+  .field .set button{ width:34px; background:linear-gradient(180deg,#2f353b,#20242a); color:var(--txt); border:none; font-weight:700; font-size:16px; cursor:pointer;}
+  .field .set .v{ min-width:74px; text-align:center; color:var(--fg); font-weight:700; font-size:16px; padding:8px 6px; border-left:1px solid #000; border-right:1px solid #000;}
+  .field .unit{ width:30px; text-align:right; color:var(--dim); font-size:12px; margin-left:8px;}
+  .field .v.hazard{color:var(--hz2);}
+  .charge-msg{ text-align:center; font-family:var(--mono); font-size:13px; font-weight:700; padding:9px; border-radius:8px; }
+  .charge-msg.warn{ color:#ffcf70; background:#2a2008; border:1px solid #a5700066; }
+  .charge-msg.done{ color:#5fd39a; background:#0f2417; border:1px solid #2ea04366; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ===== FACE VIEW ===== -->
+  <div class="psu active" id="psu">
+    <div class="topbar">
+      <span class="title">XY-SK120</span>
+      <span class="actions">
+        <span class="linkdot" id="linkDot" title="link status"></span>
+        <button class="gearbtn" id="diagBtn" title="Entities (diagnostics)">≡</button>
+      </span>
+    </div>
+    <div class="stage-wrap">
+      <div class="glass">
+        <div class="setrow">
+          <span>SET <b id="setrowV">--.-- V</b></span>
+          <span id="setrowALabel">LIMIT <b id="setrowA">-.-- A</b></span>
+        </div>
+        <div class="digits">
+          <div class="line"><span class="num v" id="digV">--.--</span><span class="spark" id="sparkV"></span><span class="u v">V</span></div>
+          <div class="line"><span class="num a" id="digA">-.--</span><span class="spark" id="sparkA"></span><span class="u a">A</span></div>
+          <div class="line"><span class="num w" id="digW">--.--</span><span class="spark" id="sparkW"></span><span class="u w">W</span></div>
+        </div>
+        <div class="statusbar">
+          <span class="in" id="uinReadout" style="display:none;">U-IN --.- V</span>
+          <span class="in" id="tempReadout">· int --°C</span>
+          <span class="in" id="buckReadout">· ext --°C</span>
+          <span class="in stage-badge" id="stageBadge" style="padding:3px 7px;border-radius:5px;">Idle</span>
+          <span class="cv cv-off" id="cvcvBadge">CV</span>
+          <span class="cc cc-off" id="cccvBadge">CC</span>
+        </div>
+      </div>
+
+      <div class="fault" id="faultCard">
+        <h3 id="faultTitle">⚠ OVERTEMPERATURE</h3>
+        <div class="when" id="faultWhen">-- · buck sensor</div>
+        <p id="faultMsg">Board temperature exceeded the shutdown threshold and output was shut off to protect the buck MOSFET. Let the unit cool, then dismiss to resume.</p>
+        <button class="dismiss" id="faultDismiss">Dismiss</button>
+      </div>
+
+    </div>
+
+    <div class="ctrls">
+      <!-- readouts only; Task 3 adds controls here -->
+      <div class="charge-msg" id="chargeMsg" style="display:none;"></div>
+    </div>
+  </div>
+
+  <!-- ===== DIAGNOSTICS VIEW (dynamic — every entity from /events) ===== -->
+  <div class="cfg" id="diag">
+    <div class="cfg-head"><h3>≡ Entities</h3>
+      <span style="margin-left:auto;display:flex;gap:8px;">
+        <button class="logsbtn" id="logsBtn">📜 Logs</button>
+        <button class="done" id="diagDone">Done</button>
+      </span>
+    </div>
+    <div id="diagList"></div>
+  </div>
+
+  <!-- ===== LOG CONSOLE VIEW (streamed live from /events "log" events) ===== -->
+  <div class="cfg" id="logs">
+    <div class="cfg-head"><h3>📜 Logs</h3><button class="done" id="logsDone">Done</button></div>
+    <div class="logwrap" id="logConsole"><span class="logempty">Waiting for log output…</span></div>
+  </div>
+
+  <footer class="build-footer" id="buildFooter" data-web-hash="__PANEL_BUILD_HASH__">Build: connecting</footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---- state store: name_id -> {state, value} ----
+  var store = {};
+  var faultShown = false;
+
+  function fmt(n, dec){ return Number(n).toFixed(dec); }
+
+  // ---- entity name map (modern web_server URLs use the NAME, not object_id) ----
+  // Internal keys stay "domain/object_id" (used by onUpdate + HTML data-obj);
+  // NAME maps each to the entity's actual name for URLs and SSE matching.
+  var NAME = {
+    'sensor/output_voltage':'Output Voltage',
+    'sensor/output_current':'Output Current',
+    'sensor/output_power':'Output Power',
+    'sensor/input_voltage':'Input Voltage',
+    'sensor/internal_temp':'Internal Temp',
+    'sensor/external_ntc_temp':'External NTC Temp',
+    'sensor/set_wattage':'Set Wattage',
+    'sensor/device_v_set':'Device V_SET',
+    'sensor/model_id':'Model ID',
+    'sensor/firmware_version':'Firmware Version',
+    'binary_sensor/cv_mode':'CV Mode',
+    'binary_sensor/output_state':'Output State',
+    'text_sensor/charge_stage':'Charge Stage',
+    'text_sensor/charge_status':'Charge Status',
+    'number/set_voltage':'Set Voltage',
+    'number/set_current':'Set Current',
+    'switch/output':'Output',
+    'switch/charge':'Charge',
+    'switch/sim_cycle':'Sim Cycle',
+    'button/stop':'STOP',
+    'button/device_restart':'Device Restart'
+  };
+  // reverse: SSE "name_id" (domain/Name) -> internal key; plus a key set.
+  var NAMEID2KEY = {}, KEYS = {};
+  Object.keys(NAME).forEach(function(key){
+    KEYS[key] = true;
+    var domain = key.slice(0, key.indexOf('/'));
+    NAMEID2KEY[domain + '/' + NAME[key]] = key;
+  });
+
+  // Resolve a state event to our internal "domain/object_id" key. Robust across
+  // web_server versions: current name_id (domain/Name), current legacy id
+  // (domain-object_id), and the 2026.8.0 flip where id becomes name-format.
+  function resolveKey(data){
+    if(!data) return null;
+    if(data.name_id && NAMEID2KEY[data.name_id]) return NAMEID2KEY[data.name_id];
+    if(data.id){
+      if(NAMEID2KEY[data.id]) return NAMEID2KEY[data.id];       // future name-format id
+      var legacy = data.id.replace('-', '/');                    // domain-object_id -> domain/object_id
+      if(KEYS[legacy]) return legacy;
+    }
+    return null;
+  }
+
+  // Modern URL path for an entity: /domain/EncodedName (falls back to object_id).
+  function urlPath(domain, obj){
+    var nm = NAME[domain + '/' + obj];
+    return '/' + domain + '/' + encodeURIComponent(nm || obj);
+  }
+
+  function post(domain, obj, action, value){
+    var url = urlPath(domain, obj) + '/' + action;
+    if(value !== undefined) url += '?value=' + encodeURIComponent(value);
+    fetch(url, {method:'POST', credentials:'same-origin'}).catch(function(){});
+  }
+
+  // ---- debounced number writes ----
+  // Steppers update the DOM instantly on every press; the actual REST write is
+  // coalesced to fire once ~400ms after the user stops (hold-repeat runs at
+  // 120ms, so a full button-hold collapses to a single POST). While a write is
+  // pending, incoming SSE echoes for that entity are stale and get ignored (see
+  // pendingWrite) so the readout never flickers back mid-adjust.
+  var POST_DEBOUNCE = 350;  // settle: write this long after the last change
+  var POST_MAXWAIT  = 250;  // but never sit on a pending change longer than this
+  var _postTimers = {}, _postVals = {}, _postFirst = {};
+  function debouncedPost(domain, obj, value){
+    var k = domain + '/' + obj;
+    _postVals[k] = value;
+    var now = Date.now();
+    if(_postFirst[k] === undefined) _postFirst[k] = now;
+    if(_postTimers[k]) clearTimeout(_postTimers[k]);
+    // Trailing debounce, capped by maxWait: a continuous hold flushes every
+    // ~250ms (output ramps in steps instead of one jump on release), while a
+    // quick tap still coalesces to a single settle write ~350ms later.
+    var wait = Math.min(POST_DEBOUNCE, Math.max(0, POST_MAXWAIT - (now - _postFirst[k])));
+    _postTimers[k] = setTimeout(function(){
+      _postTimers[k] = null;
+      _postFirst[k] = undefined;
+      post(domain, obj, 'set', _postVals[k]);
+    }, wait);
+  }
+  function cancelPost(domain, obj){
+    var k = domain + '/' + obj;
+    if(_postTimers[k]){ clearTimeout(_postTimers[k]); _postTimers[k] = null; }
+    _postFirst[k] = undefined;
+  }
+  function pendingWrite(obj){ return !!_postTimers['number/' + obj]; }
+
+  // ================= inline sparklines =================
+  // Ring buffer per readout, fed straight off the SSE stream. Rendered as a
+  // stretch-to-fit SVG polyline (viewBox 0..100, non-scaling stroke). Hovering a
+  // spark PAUSES its redraw and shows a crosshair + value/age for the sample
+  // under the cursor; leaving resumes and catches up. No external lib.
+  var SPARK_MAX = 120;                              // samples kept (~few min)
+  // Minimum vertical window per metric: floors the auto-scale so small noise
+  // stays visually small instead of being zoomed to fill the whole height.
+  var SPARK_MINSPAN = { v:1.0, a:0.3, w:1.0 };
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  var hist = { v:[], a:[], w:[] };
+  var sparkPaused = { v:false, a:false, w:false };
+  var outputOn = false;   // freeze the face graphs while output is off
+  var spark = {};                                   // metric -> {host,poly,dot,vline,tip,lo,span}
+
+  function initSpark(metric){
+    var host = el('spark' + metric.toUpperCase());
+    if(!host) return;
+    var svg = document.createElementNS(SVGNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 100 100');
+    svg.setAttribute('preserveAspectRatio', 'none');
+    var poly = document.createElementNS(SVGNS, 'polyline');
+    poly.setAttribute('vector-effect', 'non-scaling-stroke');
+    poly.setAttribute('stroke-width', '2');
+    poly.style.fill = 'none';
+    poly.style.stroke = 'var(--' + metric + ')';
+    poly.style.opacity = '0.6';
+    var dot = document.createElementNS(SVGNS, 'circle');
+    dot.setAttribute('r', '3'); dot.style.fill = 'var(--' + metric + ')'; dot.style.display = 'none';
+    var vline = document.createElementNS(SVGNS, 'line');
+    vline.setAttribute('y1', '0'); vline.setAttribute('y2', '100');
+    vline.setAttribute('vector-effect', 'non-scaling-stroke');
+    vline.style.stroke = '#ffffff55'; vline.style.display = 'none';
+    svg.appendChild(poly); svg.appendChild(vline); svg.appendChild(dot);
+    host.appendChild(svg);
+    var tip = document.createElement('div'); tip.className = 'spark-tip'; host.appendChild(tip);
+    spark[metric] = { host:host, poly:poly, dot:dot, vline:vline, tip:tip, lo:0, span:1 };
+    host.addEventListener('mouseenter', function(){ sparkPaused[metric] = true; });
+    host.addEventListener('mouseleave', function(){ sparkPaused[metric] = false; sparkCursor(metric, null); drawSpark(metric); });
+    host.addEventListener('mousemove', function(e){ sparkHover(metric, e); });
+  }
+
+  function pushHist(metric, val){
+    var h = hist[metric]; if(!h) return;
+    if(!outputOn) return;   // output off -> freeze: keep the last active trace, stop appending
+    h.push({ t:Date.now(), v:Number(val) });
+    if(h.length > SPARK_MAX) h.shift();
+    if(!sparkPaused[metric]) drawSpark(metric);
+  }
+
+  function drawSpark(metric){
+    var s = spark[metric]; if(!s) return;
+    var h = hist[metric], n = h.length;
+    if(n < 2){ s.poly.setAttribute('points', ''); return; }
+    var lo = Infinity, hi = -Infinity, i;
+    for(i = 0; i < n; i++){ var v = h[i].v; if(v < lo) lo = v; if(v > hi) hi = v; }
+    var span = (hi - lo) * 1.24;                    // data range + 12% pad each side
+    var floor = SPARK_MINSPAN[metric] || 0;
+    if(span < floor) span = floor;                  // don't zoom into micro-noise
+    if(span <= 0) span = 1;
+    var mid = (lo + hi) / 2;                         // center the trace in the window
+    lo = mid - span / 2; hi = mid + span / 2;
+    var pts = '';
+    for(i = 0; i < n; i++){
+      var x = (i / (n - 1)) * 100;
+      var y = 100 - ((h[i].v - lo) / span) * 100;
+      pts += x.toFixed(2) + ',' + y.toFixed(2) + ' ';
+    }
+    s.poly.setAttribute('points', pts);
+    s.lo = lo; s.span = span;
+  }
+
+  function sparkHover(metric, e){
+    var s = spark[metric], h = hist[metric];
+    if(!s || h.length < 2) return;
+    var rect = s.host.getBoundingClientRect();
+    var frac = (e.clientX - rect.left) / rect.width;
+    frac = Math.max(0, Math.min(1, frac));
+    var idx = Math.round(frac * (h.length - 1));
+    var samp = h[idx];
+    var x = (idx / (h.length - 1)) * 100;
+    var y = 100 - ((samp.v - s.lo) / s.span) * 100;
+    s.dot.setAttribute('cx', x); s.dot.setAttribute('cy', y); s.dot.style.display = '';
+    s.vline.setAttribute('x1', x); s.vline.setAttribute('x2', x); s.vline.style.display = '';
+    var ago = Math.round((Date.now() - samp.t) / 1000);
+    s.tip.textContent = samp.v.toFixed(2) + ' ' + metric.toUpperCase() + ' · ' + (ago <= 0 ? 'now' : ago + 's ago');
+    s.tip.style.left = (frac * rect.width) + 'px';
+    s.tip.style.display = '';
+  }
+
+  function sparkCursor(metric){
+    var s = spark[metric]; if(!s) return;
+    s.dot.style.display = 'none'; s.vline.style.display = 'none'; s.tip.style.display = 'none';
+  }
+
+  // ================= dynamic diagnostics =================
+  // Renders EVERY entity from the /events stream (independent of the styled UI's
+  // NAME map), grouped by domain, live-updated. name_id or id is "domain/Name";
+  // legacy id "domain-object_id" is the fallback. state is the device's own
+  // formatted string (e.g. "12.34 V") — exactly what the stock page shows.
+  var diagStore = {};   // key -> {valEl, on, mg, hist}
+  // Group by entity_category (0=none, 1=config, 2=diagnostic) so diagnostic
+  // entities sort below the primary sensors/controls and the config group.
+  var CAT_META = { 0:{k:'primary', t:'Sensors & Controls'}, 1:{k:'config', t:'Configuration'}, 2:{k:'diagnostic', t:'Diagnostic'} };
+  function diagParse(data){
+    if(!data) return null;
+    var ids = [data.name_id, data.id];
+    for(var k = 0; k < ids.length; k++){
+      var id = ids[k]; if(typeof id !== 'string') continue;
+      var i = id.indexOf('/');
+      if(i > 0 && i < id.length - 1) return {key:id, domain:id.slice(0,i), name:id.slice(i+1)};
+    }
+    if(typeof data.id === 'string'){
+      var j = data.id.indexOf('-');
+      if(j > 0 && j < data.id.length - 1) return {key:data.id, domain:data.id.slice(0,j), name:data.id.slice(j+1)};
+    }
+    return null;
+  }
+  function diagVal(data){
+    if(typeof data.state === 'string' && data.state.length) return data.state;
+    if(data.value !== undefined && data.value !== null) return String(data.value);
+    return '—';
+  }
+  function diagSection(cat){
+    var meta = CAT_META[cat] || CAT_META[0];
+    var id = 'diagcat-' + meta.k, sec = el(id);
+    if(sec) return sec;
+    sec = document.createElement('div'); sec.className = 'sec'; sec.id = id;
+    sec.setAttribute('data-order', cat);
+    var t = document.createElement('div'); t.className = 'sec-title diag'; t.textContent = meta.t;
+    sec.appendChild(t);
+    var list = el('diagList'), kids = list.children, placed = false;
+    for(var k = 0; k < kids.length; k++){
+      if(parseInt(kids[k].getAttribute('data-order'), 10) > cat){ list.insertBefore(sec, kids[k]); placed = true; break; }
+    }
+    if(!placed) list.appendChild(sec);
+    return sec;
+  }
+  function diagIngest(data){
+    var p = diagParse(data); if(!p) return;
+    var entry = diagStore[p.key];
+    if(!entry){
+      // entity_category only present on state_detail_all (connect snapshot);
+      // default to primary (0) for anything first seen via a bare state event.
+      var cat = (data.entity_category === 1 || data.entity_category === 2) ? data.entity_category : 0;
+      var sec = diagSection(cat);
+      var row = document.createElement('div'); row.className = 'field';
+      var nm = document.createElement('div'); nm.className = 'name'; nm.textContent = p.name; row.appendChild(nm);
+      // numeric sensors get an inline history minigraph (like the stock esp-app)
+      var mg = null;
+      if(p.domain === 'sensor' && isFinite(parseFloat(data.value))) mg = makeDiagSpark(row);
+      var val = document.createElement('span'); val.className = 'diagval'; row.appendChild(val);
+      if(p.domain === 'switch'){
+        var tgl = document.createElement('button'); tgl.className = 'diagbtn'; tgl.textContent = 'Toggle';
+        tgl.addEventListener('click', function(){ postName('switch', p.name, diagStore[p.key].on ? 'turn_off' : 'turn_on'); });
+        row.appendChild(tgl);
+      } else if(p.domain === 'button'){
+        var pb = document.createElement('button'); pb.className = 'diagbtn'; pb.textContent = 'Press';
+        pb.addEventListener('click', function(){ postName('button', p.name, 'press'); });
+        row.appendChild(pb);
+      }
+      sec.appendChild(row);
+      entry = diagStore[p.key] = {valEl:val, on:false, mg:mg, hist:[]};
+    }
+    entry.valEl.textContent = diagVal(data);
+    entry.on = !!data.value;
+    // boolean-state entities go green when ON (switch/binary/light/etc.)
+    if(/^(switch|binary_sensor|light|fan|lock|cover|valve)$/.test(p.domain)){
+      entry.valEl.classList.toggle('on', entry.on);
+    }
+    if(entry.mg){
+      var num = parseFloat(data.value);
+      if(isFinite(num)) diagSparkPush(entry, num);
+    }
+  }
+
+  // ---- diagnostics minigraph: compact auto-scaling sparkline per numeric sensor ----
+  function makeDiagSpark(row){
+    var host = document.createElement('span'); host.className = 'diagspark';
+    var svg = document.createElementNS(SVGNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 100 100'); svg.setAttribute('preserveAspectRatio', 'none');
+    var poly = document.createElementNS(SVGNS, 'polyline');
+    poly.setAttribute('vector-effect', 'non-scaling-stroke'); poly.setAttribute('stroke-width', '1.5');
+    poly.style.fill = 'none'; poly.style.stroke = '#5fb0c9'; poly.style.opacity = '0.8';
+    svg.appendChild(poly); host.appendChild(svg); row.appendChild(host);
+    return { poly:poly };
+  }
+  function diagSparkPush(entry, val){
+    var h = entry.hist; h.push(val);
+    if(h.length > 60) h.shift();               // shorter buffer than the face graphs
+    var n = h.length; if(n < 2){ entry.mg.poly.setAttribute('points', ''); return; }
+    var lo = Infinity, hi = -Infinity, i;
+    for(i = 0; i < n; i++){ if(h[i] < lo) lo = h[i]; if(h[i] > hi) hi = h[i]; }
+    var span = (hi - lo) * 1.2 || 1, mid = (lo + hi) / 2; lo = mid - span / 2;
+    var pts = '';
+    for(i = 0; i < n; i++){ pts += ((i / (n - 1)) * 100).toFixed(1) + ',' + (100 - ((h[i] - lo) / span) * 100).toFixed(1) + ' '; }
+    entry.mg.poly.setAttribute('points', pts);
+  }
+  // POST by entity NAME (diagnostics has the name_id, not our internal object_id).
+  function postName(domain, name, action){
+    fetch('/' + domain + '/' + encodeURIComponent(name) + '/' + action, {method:'POST', credentials:'same-origin'}).catch(function(){});
+  }
+
+  // ================= log console =================
+  // web_server streams every log line over /events as a "log" event (raw text
+  // with ANSI color codes). Strip the escapes, colorize by the [X] level tag,
+  // keep a bounded ring, and auto-stick to the bottom unless the user scrolled up.
+  var LOG_MAX = 500, _logStick = true, _logStarted = false;
+  function stripAnsi(s){ return s.replace(/\x1b\[[0-9;]*m/g, ''); }
+  function onLog(raw){
+    if(raw == null) return;
+    var box = el('logConsole'); if(!box) return;
+    if(!_logStarted){ box.innerHTML = ''; _logStarted = true; }   // clear placeholder
+    var line = stripAnsi(String(raw)).replace(/\s+$/, '');
+    if(!line) return;
+    var div = document.createElement('div'); div.className = 'logline';
+    var m = line.match(/^\[([A-Z]{1,2})\]/);
+    if(m) div.className += ' l-' + m[1];
+    div.textContent = line;
+    box.appendChild(div);
+    while(box.childNodes.length > LOG_MAX) box.removeChild(box.firstChild);
+    if(_logStick) box.scrollTop = box.scrollHeight;
+  }
+
+  // ================= SSE =================
+  // The browser only auto-reconnects an EventSource while it stays in the
+  // CONNECTING state. During a flash/reboot the device can answer with a partial
+  // or non-2xx response, which drops the stream to CLOSED — and CLOSED never
+  // retries on its own. So we watch readyState: let the browser handle transient
+  // CONNECTING blips, and take over with a capped-backoff reconnect on CLOSED.
+  var _es = null, _retry = 0, _reconnTimer = null, streamWatchdog = null, lastStreamActivity = 0;
+  var telemetryActive = false, telemetryGeneration = 0, pendingReads = new Set();
+  function pauseTelemetry(){
+    telemetryActive = false;
+    telemetryGeneration++;
+    if(_reconnTimer){ clearTimeout(_reconnTimer); _reconnTimer = null; }
+    if(streamWatchdog){ clearInterval(streamWatchdog); streamWatchdog = null; }
+    if(_es){ _es.close(); _es = null; }
+    pendingReads.forEach(function(controller){ controller.abort(); });
+    pendingReads.clear();
+    setLink(false);
+  }
+  function syncTelemetryFocus(){
+    var active = document.visibilityState === 'visible' && document.hasFocus();
+    if(!active){ pauseTelemetry(); return; }
+    if(telemetryActive) return;
+    telemetryActive = true;
+    telemetryGeneration++;
+    _retry = 0;
+    loadPriorityState();
+  }
+  var RECONN_MAX = 15000;   // backoff ceiling — never hammer faster than this floor step
+
+  function setLink(live){
+    var d = el('linkDot'); if(!d) return;
+    if(live) d.classList.remove('off'); else d.classList.add('off');
+  }
+
+  function scheduleReconnect(){
+    if(!telemetryActive) return;
+    setLink(false);
+    if(_es){ try{ _es.close(); }catch(e){} _es = null; }
+    if(streamWatchdog){ clearInterval(streamWatchdog); streamWatchdog = null; }
+    if(_reconnTimer) return;                 // one pending attempt at a time
+    var delay = Math.min(RECONN_MAX, 1000 * Math.pow(2, _retry));  // 1,2,4,8,15…
+    _retry++;
+    _reconnTimer = setTimeout(function(){ _reconnTimer = null; connect(); }, delay);
+  }
+
+  var buildInfo = null, buildCheckPending = false, buildReloading = false, lastBuildCheck = 0;
+  function refreshBuild(){
+    if(!telemetryActive || buildCheckPending || buildReloading) return;
+    var generation = telemetryGeneration;
+    var controller = new AbortController();
+    pendingReads.add(controller);
+    buildCheckPending = true;
+    lastBuildCheck = Date.now();
+    fetch('/panel/build.json', {credentials:'same-origin', cache:'no-store', signal:controller.signal})
+      .then(function(response){
+        if(!response.ok) throw new Error('Build metadata HTTP ' + response.status);
+        return response.json();
+      })
+      .then(function(info){
+        if(!telemetryActive || generation !== telemetryGeneration) return;
+        if(!/^[0-9a-f]{8}$/.test(info.config_hash) || !/^[0-9a-f]{12}$/.test(info.web_hash) ||
+           !/^[0-9a-f]{16}$/.test(info.boot_id) || !Number.isFinite(info.build_time)){
+          throw new Error('Invalid build metadata');
+        }
+        var footer = el('buildFooter');
+        var embeddedHash = footer.getAttribute('data-web-hash');
+        if((embeddedHash !== '__PANEL_' + 'BUILD_HASH__' && embeddedHash !== info.web_hash) ||
+           (buildInfo && (buildInfo.boot_id !== info.boot_id || buildInfo.config_hash !== info.config_hash ||
+                          buildInfo.web_hash !== info.web_hash || buildInfo.build_time !== info.build_time))){
+          buildReloading = true;
+          window.location.reload();
+          return;
+        }
+        buildInfo = info;
+        footer.textContent = 'Build ' + info.config_hash + ' · UI ' + info.web_hash;
+        footer.title = 'Firmware built ' + new Date(info.build_time * 1000).toLocaleString();
+      })
+      .catch(function(error){
+        if(error.name === 'AbortError') return;
+        console.error('Failed to fetch ESPHome build metadata', error);
+        el('buildFooter').textContent = 'Build: unavailable';
+      })
+      .finally(function(){ pendingReads.delete(controller); buildCheckPending = false; });
+  }
+
+  function connect(){
+    if(!telemetryActive || _es) return;
+    if(_reconnTimer){ clearTimeout(_reconnTimer); _reconnTimer = null; }
+    try{
+      var es = new EventSource('/events');
+      _es = es;
+      lastStreamActivity = Date.now();
+      streamWatchdog = setInterval(function(){
+        if(!telemetryActive || _es !== es) return;
+        if(Date.now() - lastStreamActivity > 20000){
+          console.warn('ESPHome telemetry stalled; reconnecting');
+          scheduleReconnect();
+        }
+      }, 5000);
+      es.addEventListener('open', function(){
+        if(!telemetryActive || _es !== es) return;
+        lastStreamActivity = Date.now();
+        _retry = 0; setLink(true); refreshBuild();
+      });
+      es.addEventListener('ping', function(){
+        if(!telemetryActive || _es !== es) return;
+        lastStreamActivity = Date.now();
+        if(Date.now() - lastBuildCheck >= 30000) refreshBuild();
+      });
+      // On connect, web_server pushes each entity once as "state_detail_all"
+      // (carries entity_category/domain/name); live updates arrive as bare
+      // "state" (no category). Handle both — detail_all always precedes state,
+      // so the diag view learns each entity's category before its row is drawn.
+      function onState(ev){
+        if(!telemetryActive || _es !== es) return;
+        lastStreamActivity = Date.now();
+        try{
+          var data = JSON.parse(ev.data);
+          var key = resolveKey(data);
+          if(key){
+            store[key] = data;
+            onUpdate(key, data);
+          }
+          // A diagnostics rendering failure must not block primary controls.
+          diagIngest(data);
+        }catch(e){ console.error('Failed to process ESPHome state event', e, ev.data); }
+      }
+      es.addEventListener('state', onState);
+      es.addEventListener('state_detail_all', onState);
+      es.addEventListener('log', function(ev){
+        if(telemetryActive && _es === es){
+          lastStreamActivity = Date.now();
+          onLog(ev.data);
+        }
+      });
+      es.onerror = function(){
+        if(!telemetryActive || _es !== es) return;
+        // CLOSED won't self-heal → manage it; CONNECTING means the browser is
+        // already retrying, so just flag offline and let it work.
+        if(es.readyState === EventSource.CLOSED) scheduleReconnect();
+        else setLink(false);
+      };
+    }catch(e){ scheduleReconnect(); }
+  }
+
+  async function loadPriorityState(){
+    var generation = telemetryGeneration;
+    var priority = [
+      ['switch', 'output'],
+      ['number', 'set_voltage'],
+      ['number', 'set_current'],
+      ['sensor', 'output_voltage'],
+      ['sensor', 'output_current']
+    ];
+    for(var i = 0; i < priority.length; i++){
+      if(!telemetryActive || generation !== telemetryGeneration) return;
+      var domain = priority[i][0], obj = priority[i][1];
+      var controller = new AbortController();
+      pendingReads.add(controller);
+      var timer = setTimeout(function(){ controller.abort(); }, 2000);
+      try{
+        var response = await fetch(urlPath(domain, obj) + '?detail=all', {
+          credentials:'same-origin', cache:'no-store', signal:controller.signal
+        });
+        if(!response.ok) throw new Error('Priority state HTTP ' + response.status);
+        var data = await response.json();
+        if(!telemetryActive || generation !== telemetryGeneration) return;
+        var key = resolveKey(data);
+        if(key !== domain + '/' + obj) throw new Error('Unexpected priority entity');
+        diagIngest(data);
+        store[key] = data;
+        onUpdate(key, data);
+      }catch(error){
+        if(!telemetryActive || generation !== telemetryGeneration) return;
+        console.error('Failed to load priority entity ' + domain + '/' + obj, error);
+      }finally{
+        clearTimeout(timer);
+        pendingReads.delete(controller);
+      }
+    }
+    // Open SSE only after the priority snapshot; no older REST reply can
+    // overwrite a newer stream update. The stream supplies all remaining state.
+    if(telemetryActive && generation === telemetryGeneration){
+      refreshBuild();
+      connect();
+    }
+  }
+
+  // ================= dispatch =================
+  function onUpdate(name_id, data){
+    switch(name_id){
+      case 'sensor/output_voltage': digV(data.value); return;
+      case 'sensor/output_current': digA(data.value); return;
+      case 'sensor/output_power': digW(data.value); return;
+      case 'sensor/input_voltage': uinReadout(data.value); return;
+      case 'sensor/internal_temp': tempReadout(data.value); return;
+      case 'sensor/external_ntc_temp': extReadout(data.value); return;
+      case 'binary_sensor/cv_mode': cvMode(!!data.value); return;
+      case 'binary_sensor/output_state': outputOn = !!data.value; return;  // gates sparklines
+      case 'text_sensor/charge_stage': chargeStage(data.state); return;
+      case 'text_sensor/charge_status': chargeMsg(data.state); return;
+      case 'switch/output': outputEnable(!!data.value); return;
+      case 'number/set_voltage': setStepperVal('set_voltage', data.value); setrowV(data.value); return;
+      case 'number/set_current': setStepperVal('set_current', data.value); setrowA(data.value); return;
+    }
+  }
+
+  // ---- face digit helpers ----
+  function digV(v){ el('digV').textContent = fmt(v,2); pushHist('v', v); }
+  function digA(v){ el('digA').textContent = fmt(v,2); pushHist('a', v); }
+  function digW(v){ el('digW').textContent = fmt(v,2); pushHist('w', v); }
+  function setrowV(v){ el('setrowV').textContent = fmt(v,2) + ' V'; }
+  function setrowA(v){ el('setrowA').textContent = fmt(v,2) + ' A'; }
+  function uinReadout(v){
+    var readout = el('uinReadout');
+    var valid = typeof v === 'number' && Number.isFinite(v) && v >= 5;
+    readout.style.display = valid ? '' : 'none';
+    readout.textContent = valid ? 'U-IN ' + fmt(v,1) + ' V' : 'U-IN unavailable';
+  }
+  function tempReadout(v){
+    el('tempReadout').textContent = '· int ' + fmt(v,0) + '°C';
+  }
+  function extReadout(v){
+    el('buckReadout').textContent = '· ext ' + fmt(v,0) + '°C';
+  }
+  // CV Mode binary_sensor: 1 = CV, 0 = CC.
+  function cvMode(isCV){
+    var cv = el('cvcvBadge'), cc = el('cccvBadge');
+    cv.textContent = 'CV'; cc.textContent = 'CC';
+    cv.className = isCV ? 'cv cv-on' : 'cv cv-off';
+    cc.className = isCV ? 'cc cc-off' : 'cc cc-on';
+  }
+  function chargeStage(stateStr){
+    var badge = el('stageBadge');
+    badge.textContent = stateStr || 'Idle';
+  }
+
+  // Charger status. Complete -> green banner. Faults -> the red dismissible
+  // fault card. Normal charging/float is quiet — the stage badge covers it.
+  function chargeMsg(s){
+    var banner = el('chargeMsg');
+    s = (s || '').trim();
+    var quiet = !s || /^Charging/i.test(s) || /^Float$/i.test(s);
+    if(quiet){
+      banner.style.display = 'none';
+      if(faultSource === 'charge') clearAllOverlays();   // charging resumed -> drop the card
+      return;
+    }
+    if(/complete/i.test(s)){
+      banner.textContent = '✓ ' + s;
+      banner.className = 'charge-msg done';
+      banner.style.display = '';
+      if(faultSource === 'charge') clearAllOverlays();
+      return;
+    }
+    banner.style.display = 'none';
+    var title = /no load|open/i.test(s) ? '⚠ NO LOAD'
+              : /overcurrent/i.test(s)  ? '⚠ OVERCURRENT'
+              : /source/i.test(s)       ? '⚠ SOURCE OUT OF WINDOW'
+              : '⚠ CHARGE FAULT';
+    showFault(title, '<b>' + s + '</b><br>Output was shut off. Correct the condition, then dismiss to resume.', 'charge', ' · charger');
+  }
+
+  function outputEnable(on){
+    var b = el('outputBtn');
+    if(!b) return;     // controls arrive in Task 3
+    b.textContent = 'OUTPUT  ' + (on ? 'ON' : 'OFF');
+    b.className = 'onoff ' + (on ? 'on' : 'off');
+  }
+
+  var outputRequestPending = false;
+  async function toggleOutput(){
+    if(outputRequestPending) return;
+    syncTelemetryFocus();
+    var button = el('outputBtn');
+    var desired = !outputOn;
+    var controller = new AbortController();
+    pendingReads.add(controller);
+    var timer = setTimeout(function(){ controller.abort(); }, 4000);
+    outputRequestPending = true;
+    button.disabled = true;
+    button.title = 'Waiting for device confirmation';
+    try{
+      var response = await fetch(urlPath('switch', 'output') + '/' +
+        (desired ? 'turn_on' : 'turn_off'), {
+        method:'POST', credentials:'same-origin', signal:controller.signal
+      });
+      if(!response.ok) throw new Error('Output command HTTP ' + response.status);
+      // ESPHome acknowledges POST before its deferred switch action runs.
+      for(var attempt = 0; attempt < 10; attempt++){
+        await new Promise(function(resolve){ setTimeout(resolve, 100); });
+        if(!telemetryActive || controller.signal.aborted) throw new Error('Output confirmation interrupted');
+        response = await fetch(urlPath('switch', 'output') + '?detail=all', {
+          credentials:'same-origin', cache:'no-store', signal:controller.signal
+        });
+        if(!response.ok) throw new Error('Output confirmation HTTP ' + response.status);
+        var data = await response.json();
+        if(resolveKey(data) !== 'switch/output' || typeof data.value !== 'boolean')
+          throw new Error('Invalid output confirmation');
+        if(!telemetryActive || controller.signal.aborted) throw new Error('Output confirmation interrupted');
+        store['switch/output'] = data;
+        diagIngest(data);
+        outputEnable(data.value);
+        if(data.value === desired){ button.title = ''; return; }
+      }
+      throw new Error('Device did not reach the requested output state');
+    }catch(error){
+      console.error('Output control failed', error);
+      button.title = 'Output control failed: ' + error.message;
+      button.textContent = 'OUTPUT  ' + (outputOn ? 'ON' : 'OFF') + ' · ERROR';
+    }finally{
+      clearTimeout(timer);
+      pendingReads.delete(controller);
+      outputRequestPending = false;
+      button.disabled = false;
+    }
+  }
+
+  // Red fault-card presenter. source: 'charge'.
+  var faultSource = null;
+  function showFault(title, msgHtml, source, whenSuffix){
+    faultShown = true;
+    faultSource = source || 'charge';
+    el('psu').classList.add('show-fault','is-locked');
+    el('faultTitle').textContent = title;
+    var when = new Date().toISOString().replace('T',' ').substring(0,19);
+    el('faultWhen').textContent = when + (whenSuffix || '');
+    el('faultMsg').innerHTML = msgHtml;
+  }
+
+  function dismissFault(){
+    faultShown = false;
+    el('psu').classList.remove('show-fault','is-locked');
+  }
+
+  function clearAllOverlays(){
+    faultShown = false;
+    faultSource = null;
+    el('psu').classList.remove('show-fault','is-locked');
+  }
+
+  // ---- generic stepper val display (face) ----
+  function setStepperVal(obj, v){
+    if(pendingWrite(obj)) return;   // ignore stale echo while our write is queued
+    var stepper = document.querySelector('.stepper[data-obj="' + obj + '"]');
+    if(!stepper) return;
+    var dec = parseInt(stepper.getAttribute('data-dec'),10);
+    var valEl = stepper.querySelector('[data-role="val"]');
+    if(valEl && document.activeElement !== valEl.querySelector('input')){
+      valEl.textContent = fmt(v, dec);
+    }
+    stepper.setAttribute('data-current', v);
+  }
+
+  function el(id){ return document.getElementById(id); }
+
+  // ================= FACE steppers (hold-to-repeat + tap to type) =================
+  function wireFaceSteppers(){
+    document.querySelectorAll('.stepper').forEach(function(stepper){
+      var obj = stepper.getAttribute('data-obj');
+      var dec = parseInt(stepper.getAttribute('data-dec'),10);
+      var min = parseFloat(stepper.getAttribute('data-min'));
+      var max = parseFloat(stepper.getAttribute('data-max'));
+
+      stepper.querySelectorAll('button[data-step]').forEach(function(btn){
+        var step = parseFloat(btn.getAttribute('data-step'));
+        wireHold(btn, function(){
+          var cur = parseFloat(stepper.getAttribute('data-current') || '0');
+          var next = clamp(round(cur + step, dec), min, max);
+          stepper.setAttribute('data-current', next);
+          stepper.querySelector('[data-role="val"]').textContent = fmt(next, dec);
+          if(obj === 'set_voltage') setrowV(next);        // live-sync SET readout
+          else if(obj === 'set_current') setrowA(next);
+          debouncedPost('number', obj, next);
+        });
+      });
+
+      var valEl = stepper.querySelector('[data-role="val"]');
+      // mousedown (not click) so a press+drag anywhere in the box focuses it.
+      var startEdit = function(e){
+        if(e.target.tagName === 'INPUT') return;   // already editing
+        e.preventDefault();                         // suppress text-caret drag
+        beginEdit(valEl, obj, dec, min, max, function(next){
+          stepper.setAttribute('data-current', next);
+        });
+      };
+      valEl.addEventListener('mousedown', startEdit);
+      valEl.addEventListener('touchstart', startEdit, {passive:false});
+    });
+  }
+
+  function round(n, dec){ var f = Math.pow(10,dec); return Math.round(n*f)/f; }
+  function clamp(n, min, max){ return Math.min(max, Math.max(min, n)); }
+
+  // hold-to-repeat: fire immediately, then repeat after delay
+  function wireHold(btn, fn){
+    var timer = null, interval = null;
+    function start(e){
+      if(e) e.preventDefault();
+      fn();
+      timer = setTimeout(function(){
+        interval = setInterval(fn, 120);
+      }, 500);
+    }
+    function stop(){
+      clearTimeout(timer); clearInterval(interval);
+      timer = null; interval = null;
+    }
+    btn.addEventListener('mousedown', start);
+    btn.addEventListener('touchstart', start, {passive:false});
+    ['mouseup','mouseleave','touchend','touchcancel'].forEach(function(ev){
+      btn.addEventListener(ev, stop);
+    });
+  }
+
+  // tap-to-type on face stepper value
+  function beginEdit(valEl, obj, dec, min, max, onCommit){
+    var cur = valEl.textContent;
+    valEl.innerHTML = '<input type="number" step="any" value="' + cur + '">';
+    var input = valEl.querySelector('input');
+    input.focus(); input.select();
+    function commit(){
+      var v = parseFloat(input.value);
+      if(isNaN(v)) v = parseFloat(cur);
+      v = clamp(round(v, dec), min, max);
+      valEl.textContent = fmt(v, dec);
+      onCommit(v);
+      if(obj === 'set_voltage') setrowV(v);
+      else if(obj === 'set_current') setrowA(v);
+      cancelPost('number', obj);   // explicit commit supersedes any queued write
+      post('number', obj, 'set', v);
+    }
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', function(e){
+      if(e.key === 'Enter'){ input.blur(); }
+      if(e.key === 'Escape'){ valEl.textContent = cur; }
+    });
+  }
+
+  // ================= view switching =================
+  // Each view has a real URL so a refresh (and back/forward) restores it. The
+  // PanelHandler serves /panel/* → this same SPA, which reads location.pathname.
+  var VIEW_PATH = { psu:'/panel', diag:'/panel/entities', logs:'/panel/logs' };
+  var PATH_VIEW = { '/panel':'psu', '/panel/':'psu', '/panel/entities':'diag', '/panel/logs':'logs' };
+
+  function showView(which, push){
+    ['psu','diag','logs'].forEach(function(v){ el(v).classList.toggle('active', v === which); });
+    if(which === 'logs'){ var box = el('logConsole'); if(box){ _logStick = true; box.scrollTop = box.scrollHeight; } }
+    if(push !== false){
+      var p = VIEW_PATH[which] || '/panel';
+      if(location.pathname !== p){ try{ history.pushState({view:which}, '', p); }catch(e){} }
+    }
+  }
+  function showFace(){ showView('psu'); }
+  function showDiag(){ showView('diag'); }
+  function showLogs(){ showView('logs'); }
+
+  function routeFromPath(){ return PATH_VIEW[location.pathname] || 'psu'; }
+  function initRoute(){
+    var v = routeFromPath();
+    try{ history.replaceState({view:v}, '', VIEW_PATH[v]); }catch(e){}   // normalize URL
+    showView(v, false);
+    window.addEventListener('popstate', function(ev){
+      showView((ev.state && ev.state.view) || routeFromPath(), false);
+    });
+  }
+
+  // ================= wiring buttons =================
+  function wireButtons(){
+    el('diagBtn').addEventListener('click', showDiag);
+    el('diagDone').addEventListener('click', showFace);
+    el('logsBtn').addEventListener('click', showLogs);
+    el('logsDone').addEventListener('click', showDiag);   // back to Entities
+    var logBox = el('logConsole');
+    logBox.addEventListener('scroll', function(){
+      // stick to bottom only while the user is near it
+      _logStick = (logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight) < 40;
+    });
+
+    var ob = el('outputBtn');   // controls arrive in Task 3
+    if(ob) ob.addEventListener('click', toggleOutput);
+  }
+
+  // ================= boot =================
+  wireFaceSteppers();
+  wireButtons();
+  initSpark('v'); initSpark('a'); initSpark('w');
+  initRoute();
+  document.addEventListener('visibilitychange', syncTelemetryFocus);
+  window.addEventListener('focus', syncTelemetryFocus);
+  window.addEventListener('blur', pauseTelemetry);
+  window.addEventListener('pagehide', pauseTelemetry);
+  window.addEventListener('pageshow', syncTelemetryFocus);
+  syncTelemetryFocus();
+
+})();
+</script>
+</body>
+</html>
