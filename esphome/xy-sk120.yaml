@@ -403,6 +403,22 @@ binary_sensor:
     address: 0x0012
     bitmask: 1
 
+# ---- Master stop -----------------------------------------------------------
+# One press kills EVERYTHING regardless of state: charge engine, sim, soft-start
+# ramp, and the output. (Output-off alone isn't enough — sim keeps running and
+# the UI toggles stay on.) For a true fail-safe, also drive a physical contactor
+# on the output from a GPIO that defaults open — firmware can't guarantee output
+# off if the ESP hangs.
+button:
+  - platform: template
+    name: "STOP"
+    id: estop
+    on_press:
+      - lambda: 'id(cj_run) = false; id(g_sim) = false; id(cj_stage) = 0; id(cj_status) = std::string("STOPPED");'
+      - script.stop: softstart_on
+      - switch.turn_off: sk_onoff
+      - lambda: 'id(charge_sw).publish_state(false); id(sim_sw).publish_state(false);'
+
 # ---- Controls (FC06 holding writes) ----------------------------------------
 switch:
   # Raw REG_ONOFF bit — internal; driven by the Output switch via soft-start.
