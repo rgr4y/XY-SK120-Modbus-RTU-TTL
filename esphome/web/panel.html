@@ -139,6 +139,11 @@
   .stage-badge.st-cv,.stage-badge.st-done{ background:#0f2417; color:#5fd39a; border-color:#2ea04399; }
   .stage-badge.st-float{ background:#12203a; color:#58a6ff; border-color:#58a6ff77; }
   .stage-badge.st-fault{ background:#2a0d0d; color:#ff6b6b; border-color:#ff4d4d99; }
+  .temp-invalid{ background:#2a2008; color:#ffcf70; border:1px solid #a5700066; padding:2px 6px; border-radius:5px; }
+  .statuslog{ display:flex; flex-direction:column; align-items:flex-end; gap:1px; padding:2px 16px 0; font-family:var(--mono); font-size:12px; line-height:1.35; min-height:14px; }
+  .statuslog .s{ color:#7d8a97; white-space:nowrap; }
+  .statuslog .s.done{ color:#5fd39a; }
+  .statuslog .s.warn{ color:#ff6b6b; }
   .charge-msg.done{ color:#5fd39a; background:#0f2417; border:1px solid #2ea04366; }
 </style>
 </head>
@@ -156,6 +161,7 @@
         <button class="gearbtn" id="diagBtn" title="Entities (diagnostics)">≡</button>
       </span>
     </div>
+    <div class="statuslog" id="statusLog"></div>
     <div class="stage-wrap">
       <div class="glass">
         <div class="setrow">
@@ -801,7 +807,12 @@
     el('tempReadout').textContent = '· int ' + fmt(v,0) + '°C';
   }
   function extReadout(v){
-    el('buckReadout').textContent = '· ext ' + fmt(v,0) + '°C';
+    var e = el('buckReadout');
+    if(isNaN(v) || v >= 150){   // unwired NTC reads the 888.8 sentinel; engine treats >=150 as invalid
+      e.className = 'in temp-invalid'; e.textContent = 'ext n/c';
+    } else {
+      e.className = 'in'; e.textContent = '· ext ' + fmt(v,0) + '°C';
+    }
   }
   // CV Mode binary_sensor: 1 = CV, 0 = CC.
   function cvMode(isCV){
@@ -812,12 +823,14 @@
   }
   // Exact device strings (xy-sk120.yaml). Unknown text falls back to grey.
   var STAGE_CLS = {'IDLE':'st-idle','CC (bulk)':'st-cc','CV (absorb)':'st-cv','FLOAT':'st-float','DONE':'st-done','FAULT':'st-fault'};
+  // Short badge labels so the stage pill stays compact next to the CV/CC mode pills.
+  var STAGE_LABEL = {'IDLE':'IDLE','CC (bulk)':'BULK','CV (absorb)':'ABSORB','FLOAT':'FLOAT','DONE':'DONE','FAULT':'FAULT'};
   var curStage = '', curStatus = '';
   function chargeStage(s){
     var prev = curStage;
     curStage = (s || '').trim();
     var badge = el('stageBadge');
-    badge.textContent = curStage || 'Idle';
+    badge.textContent = STAGE_LABEL[curStage] || curStage || 'IDLE';
     badge.className = 'in stage-badge ' + (STAGE_CLS[curStage] || 'st-idle');
     if(curStage === 'FAULT'){
       if(prev !== 'FAULT') showFault('⚠ CHARGE FAULT', '', 'charge', ' · charger');  // once per entry; Dismiss sticks
@@ -825,15 +838,29 @@
     renderStatus();
   }
   // Charge Status free text, passed through raw (never enumerated here).
-  function chargeMsg(s){ curStatus = (s || '').trim(); renderStatus(); }
+  // Keep a short history; newest is prominent, older entries fade out.
+  var statusHist = [];
+  function chargeMsg(s){
+    var t = (s || '').trim();
+    if(t && t !== curStatus){ statusHist.unshift(t); if(statusHist.length > 6) statusHist.pop(); }
+    curStatus = t;
+    renderStatus();
+  }
   function renderStatus(){
-    var banner = el('chargeMsg');
-    if(faultSource === 'charge') el('faultMsg').innerHTML = '<b></b><br>Output was shut off. Correct the condition, then dismiss to resume.';
-    if(faultSource === 'charge') el('faultMsg').firstChild.textContent = curStatus || 'fault';
-    var show = curStatus && !(curStage === 'FAULT' && faultShown);
-    banner.style.display = show ? '' : 'none';
-    banner.textContent = curStatus;
-    banner.className = 'charge-msg' + (curStage === 'DONE' ? ' done' : curStage === 'FAULT' ? ' warn' : ' dim');
+    if(faultSource === 'charge'){
+      el('faultMsg').innerHTML = '<b></b><br>Output was shut off. Correct the condition, then dismiss to resume.';
+      el('faultMsg').firstChild.textContent = curStatus || 'fault';
+    }
+    var box = el('statusLog');
+    box.innerHTML = '';
+    for(var i=0; i<statusHist.length; i++){
+      var d = document.createElement('div');   // textContent only — no injection
+      d.className = 's' + (i === 0 ? (curStage === 'FAULT' ? ' warn' : curStage === 'DONE' ? ' done' : '') : '');
+      d.style.opacity = Math.max(0.12, 1 - i * 0.22).toFixed(2);
+      d.textContent = statusHist[i];
+      box.appendChild(d);
+    }
+    el('chargeMsg').style.display = 'none';   // status now lives in #statusLog
   }
 
   // Switch toggles (Output / Charge / Sim Cycle). Render + confirm-poll.
