@@ -23,7 +23,7 @@ substitutions:
 
   # -- Setpoint UI clamps (device enforces its own limits)
   vset_max: "36.5"         # verified on-device accepts up to 36.5 V
-  iset_max: "12.0"         # VERIFY vs SK120 spec
+  iset_max: "6.0"          # SK120 hard max 6A (120W; power-limit bites >20V)
 
   # -- Output-enable soft-start (avoids boost inrush collapsing a weak input
   # like a PD trigger). On enable with target > Vin: command Vin, enable, then
@@ -34,15 +34,30 @@ substitutions:
 
   # -- Lead-acid charge engine (SET per pack before charging a real battery) --
   # Carried from dps150 charge/profiles.js (leadacid) + engine.js state machine.
+  # EverStart Platinum AGM H8 — 95Ah, CCA 900, RC 160.
   cells: "6"               # 12V pack = 6 cells (24V = 12)
-  capacity_ah: "7"         # pack Ah — sets taper + total-time ceiling
-  charge_a: "1.0"          # bulk/CC current (A), clamped to iset_max
-  absorb_v_cell: "2.40"    # AGM absorb 2.40; flooded ~2.45
-  float_v_cell: "2.25"     # AGM/flooded float
+  capacity_ah: "95"        # pack Ah — sets taper + total-time ceiling
+  charge_a: "4.0"          # bulk/CC current (A) — conservative start (C/24 on 95Ah)
+  absorb_v_cell: "2.40"    # AGM absorb -> 14.4V
+  float_v_cell: "2.27"     # AGM float -> 13.6V
   taper_c: "0.02"          # CV->FLOAT taper = taper_c * capacity_ah (A)
   temp_min: "-10"          # cold inhibit (C)
   temp_max: "50"           # hot abort (C)
   tempcomp_mv: "-4"        # mV/C/cell off 25C ref (negative = raise V when cold)
+
+  # Input source power budget: caps CC current so Vout*Iout/eff stays under the
+  # source (prevents a PD trigger folding/resetting under steady load). Computed
+  # at worst-case voltage (absorbV). Soft-start handles the enable transient.
+  source_max_w: "100"      # source claim (W)
+  source_eff: "0.9"        # converter efficiency (input W = output W / eff)
+
+  # Source voltage window (4S LiFePO4 bank). Won't start outside it; aborts the
+  # charge if the source drops below src_min_v (protects the bank from over-discharge).
+  src_min_v: "12.0"        # 3.0V/cell knee — LFP falls off fast below this
+  src_max_v: "14.6"        # 3.65V/cell full
+  src_low_dwell_s: "15"    # Vin must stay < src_min_v this long before abort (debounce load sag)
+
+  boot_output_off: "false" # false = resume a charge that was running pre-reboot; true = always force output off on boot
 
 packages:
   base: !include common.yaml
@@ -57,6 +72,34 @@ esp32:
 # bit, bridge regs sk_r06–sk_r10) from the web UI.
 web_server:
   include_internal: false
+
+# Boot policy. Engine is gated on cj_booted so the 1s tick can't act before
+# this runs. boot_output_off:true = always come up output-off (safety).
+# false = resume: if a charge was running (cj_run persisted), restart it from
+# IDLE so preflight + soft-start re-run cleanly.
+esphome:
+  on_boot:
+    - priority: -100          # after components/modbus are up
+      then:
+        - delay: 2s           # let the modbus hub establish before writing
+        - if:
+            condition:
+              lambda: 'return ${boot_output_off};'
+            then:
+              - lambda: 'id(cj_run) = false; id(cj_stage) = 0; id(cj_status) = std::string("boot: output off");'
+              - script.stop: softstart_on
+              - switch.turn_off: sk_onoff
+            else:
+              - lambda: |-
+                  id(cj_stage) = 0;   // restart from IDLE; engine re-runs preflight if cj_run
+                  if (id(cj_run)) id(cj_status) = std::string("resuming charge after boot");
+        - lambda: 'id(cj_booted) = true;'   # release the engine tick
+
+time:
+  - platform: sntp
+    servers:
+      - 10.0.2.1
+      - 10.0.2.24
 
 uart:
   id: uart_modbus
@@ -88,11 +131,13 @@ globals:
     restore_value: no
     initial_value: '0'
   # ---- charge engine state ----
-  - {id: cj_run,      type: bool,     restore_value: no, initial_value: 'false'}  # Charge switch on
+  - {id: cj_run,      type: bool,     restore_value: yes, initial_value: 'false'} # Charge on — PERSISTED for resume-after-boot
+  - {id: cj_booted,   type: bool,     restore_value: no, initial_value: 'false'}  # boot policy applied -> engine may run
   - {id: cj_stage,    type: int,      restore_value: no, initial_value: '0'}      # 0 IDLE 1 CC 2 CV 3 FLOAT 4 DONE 5 FAULT
   - {id: cj_t0,       type: uint32_t, restore_value: no, initial_value: '0'}      # charge start millis
   - {id: cj_stage_t0, type: uint32_t, restore_value: no, initial_value: '0'}      # stage start millis
   - {id: cj_taper_t0, type: int32_t,  restore_value: no, initial_value: '-1'}     # taper-began millis (-1 = null)
+  - {id: cj_srclow_t0,type: int32_t,  restore_value: no, initial_value: '-1'}     # source-below-min millis (-1 = null), debounce
   - {id: cj_status,   type: std::string, restore_value: no, initial_value: '""'}  # fault/status text
 
 # Output-enable soft-start. Target <= Vin+margin -> enable at target (buck, no
@@ -240,6 +285,16 @@ sensor:
     entity_category: diagnostic
     skip_updates: 600
 
+  # Commanded power ceiling (setpoints, not measured output). Read-only.
+  - platform: template
+    name: "Set Wattage"
+    id: set_wattage
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    device_class: power
+    update_interval: 1s
+    lambda: 'return id(set_voltage).state * id(set_current).state;'
+
 # ---- Status flags (attach to the 0x02–0x12 live range by address) ----------
 binary_sensor:
   - platform: modbus_controller
@@ -350,7 +405,7 @@ interval:
   - interval: 1s
     then:
       - lambda: |-
-          if (!id(cj_run)) return;                       // engine off
+          if (!id(cj_booted) || !id(cj_run)) return;     // wait for boot policy; engine off
 
           const int   CELLS  = ${cells};
           const float CAP    = ${capacity_ah};
@@ -362,6 +417,7 @@ interval:
           // inputs
           float v = id(sk_vout).state;
           float i = id(sk_iout).state;
+          float vin = id(sk_vin).state;
           float t = id(sk_temp_ext).state;
           bool  tvalid = !isnan(t) && t < 150.0f;        // 888.8 = unwired NTC sentinel
           bool  cv = id(sk_cv).state;
@@ -371,7 +427,8 @@ interval:
           float tc = tvalid ? (${tempcomp_mv} / 1000.0f) * (t - 25.0f) : 0.0f;
           float absorbV = fminf((${absorb_v_cell} + tc) * CELLS, VCLAMP);
           float floatV  = fminf((${float_v_cell}  + tc) * CELLS, VCLAMP);
-          float chargeA = fminf((float) ${charge_a}, ICLAMP);
+          float srcImax = (${source_max_w} * ${source_eff}) / absorbV;  // input budget -> I cap at worst-case V
+          float chargeA = fminf(fminf((float) ${charge_a}, ICLAMP), srcImax);
           float taperA  = fminf(${taper_c} * CAP, chargeA * 0.2f);
 
           int stage = id(cj_stage);
@@ -391,10 +448,22 @@ interval:
               id(cj_stage) = 5; id(cj_status) = std::string(f);
               return;
             }
+            // source under-voltage with dwell — debounce transient sag (compressor/charge-current dips)
+            if (vin < ${src_min_v}) {
+              if (id(cj_srclow_t0) < 0) id(cj_srclow_t0) = (int32_t) now;
+              else if (now - (uint32_t) id(cj_srclow_t0) >= (uint32_t) (${src_low_dwell_s} * 1000)) {
+                id(sk_onoff).turn_off(); id(softstart_on).stop();
+                id(cj_stage) = 5; id(cj_status) = std::string("source depleted");
+                return;
+              }
+            } else {
+              id(cj_srclow_t0) = -1;
+            }
           }
 
           switch (stage) {
             case 0: {   // IDLE -> start
+              if (vin < ${src_min_v} || vin > ${src_max_v}) { id(cj_status) = std::string("source out of range"); break; }
               if (tvalid && t < ${temp_min}) { id(cj_status) = std::string("cold inhibit"); break; }
               if (tvalid && t > ${temp_max}) { id(cj_stage) = 5; id(cj_status) = std::string("hot at start"); break; }
               // pack-bounds only when terminal V is actually sensed (XY reads ~0 output-off)
@@ -406,7 +475,7 @@ interval:
               id(set_voltage).make_call().set_value(absorbV).perform();
               id(set_current).make_call().set_value(chargeA).perform();
               id(softstart_on).execute();                // ramp V + enable output
-              id(cj_t0) = now; id(cj_stage_t0) = now; id(cj_taper_t0) = -1;
+              id(cj_t0) = now; id(cj_stage_t0) = now; id(cj_taper_t0) = -1; id(cj_srclow_t0) = -1;
               id(cj_stage) = 1; id(cj_status) = std::string("CC (bulk)");
               break;
             }
