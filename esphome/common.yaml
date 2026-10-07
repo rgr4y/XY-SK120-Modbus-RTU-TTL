@@ -1,0 +1,95 @@
+# Modified 7/03/2026 by Rob Vella
+substitutions:
+  name: "esphome-default-configureme"  # Unique device identifier used by ESPHome.
+  friendly_name: "Default Device"        # User-friendly name for easier recognition.
+  project_version: 2026.06.18            # Version number for the project configuration.
+
+# Core ESPHome configuration settings.
+esphome:
+  name: ${name}                  # Device name pulled from substitutions.
+  friendly_name: ${friendly_name}  # Display name pulled from substitutions.
+  name_add_mac_suffix: false     # Do not append MAC address to the device name.
+  min_version: 2026.4.3          # Ensures a minimum ESPHome version is used.
+  project:
+    name: rgv.iot                # Identifier for the project grouping.
+    version: ${project_version}  # Uses the defined project version.
+
+# Logging settings: extendable for UART/log logging if required.
+logger:
+  # Logging is enabled with default settings; add UART config if needed.
+
+# API configuration for secure communication.
+api:
+  reboot_timeout: 0s
+  encryption:
+    key: !secret api_key         # Secure API encryption key stored in secrets.
+
+# OTA update configuration for over-the-air firmware updates.
+ota:
+  - platform: esphome
+    id: ota_esphome
+    password: !secret ota_password  # Secure OTA update password stored in secrets.
+
+# WiFi configuration — works for both ESP8266 and ESP32 devices.
+wifi:
+  id: wifi_conf
+  min_auth_mode: WPA2
+  post_connect_roaming: false
+  fast_connect: true
+  reboot_timeout: 600s
+  networks:
+    - ssid: !secret wifi_ssid
+      password: !secret wifi_password
+    - ssid: !secret wifi2_ssid
+      password: !secret wifi2_password
+  ap:
+    ssid: ${friendly_name}         # AP SSID uses the friendly device name.
+    password: !secret wifi_captive_password  # Secure captive portal password.
+    ap_timeout: 120s
+
+# Web server configuration for local diagnostics and management.
+web_server:
+  local: true                     # Enables the local web server.
+  include_internal: True          # Includes internal pages for diagnostics.
+  version: 3                      # Specifies the web server version.
+  ota: False                      # OTA functions via web server are disabled.
+#  auth:
+#    username: !secret web_user
+#    password: !secret web_pass
+     
+# Restart switch configuration for manual device restarts.
+button:
+  - platform: restart
+    name: "Device Restart"        # Provides a switch to restart the device.
+    id: switch_restart
+    entity_category: diagnostic   # Categorized for diagnostic purposes.
+    
+# Sensor configurations for monitoring device status.
+sensor:
+  - platform: uptime
+    type: seconds
+    name: Uptime Sensor            # Monitors device uptime in seconds.
+    entity_category: diagnostic   # Categorized for diagnostic purposes.
+    update_interval: 60s          # Uptime is checked every 60 seconds.
+    filters:
+      - throttle: 600s            # Throttles updates to once every 600 seconds.
+  - platform: wifi_signal
+    name: WiFi Signal              # Monitors the strength of WiFi connectivity.
+    icon: "mdi:wifi"              # Uses a WiFi icon from Material Design Icons.
+    update_interval: 30s          # WiFi signal checked every 30 seconds.
+    entity_category: diagnostic   # Marked as a diagnostic sensor.
+    filters:
+      - throttle: 10min           # Throttles updates to once every 10 minutes.
+
+# Text sensor to display the installed ESPHome version.
+text_sensor:
+  - platform: version
+    name: "ESPHome Version"
+    id: esphome_build_version
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+      id: wifi_ip
+    ssid:
+      name: "Connected SSID"
+      id: wifi_ssid

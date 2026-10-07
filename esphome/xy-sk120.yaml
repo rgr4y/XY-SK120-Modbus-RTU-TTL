@@ -1,0 +1,226 @@
+# XY-SK120 bench supply — ESP32 Modbus-RTU/TTL bridge, D3806-pattern ESPHome.
+# ESP32 is wired to the XY-SK120's TTL UART (3-wire: GND/TX/RX, no RS485 DE/RE,
+# no flow control). Register map: ../lib/XY-SKxxx/XY-SKxxx.h (source of truth,
+# verified on-device fw 1.39: MODEL 0x16 == 22873, 115200 8N1, slave 1).
+#
+# Scaling (from datasheet, confirmed by probe): V ×0.01, A ×0.001, W ×0.01,
+# temp ×0.1. number writes use register_raw = value × multiply (inverse).
+#
+# STAGE 1 (this file): modbus mapping + stock web_server UI, to verify every
+# entity against real hardware. STAGE 2: replace the default page with the
+# carved DPS-150 panel (D3806 web.yaml + PanelHandler) once entities are proven.
+
+substitutions:
+  name: "xy-sk120"
+  friendly_name: "XY-SK120"
+  project_version: "2026.10.06"
+
+  # -- Wiring: Seeed XIAO ESP32-C3 ------------------------------------------
+  uart_tx: "GPIO3"         # ESP TX -> XY-SK120 RX
+  uart_rx: "GPIO4"         # ESP RX <- XY-SK120 TX
+  modbus_addr: "1"         # REG_SLAVE_ADDR factory default
+  poll_ms: "500ms"         # telemetry poll (Vin + all live regs)
+
+  # -- Setpoint UI clamps (device enforces its own limits; VERIFY vs SK120 spec)
+  vset_max: "30.0"
+  iset_max: "12.0"
+
+packages:
+  base: !include common.yaml
+
+esp32:
+  variant: esp32c3
+  # C3 supports the Arduino framework (ESPHome default) — no esp-idf needed.
+  # XIAO ESP32-C3 external u.FL antenna is hardware-selected (no GPIO switch,
+  # unlike the C6). Switched off the C6 for WiFi stability.
+
+uart:
+  id: uart_modbus
+  tx_pin: ${uart_tx}
+  rx_pin: ${uart_rx}
+  baud_rate: 115200        # REG_BAUDRATE_L default code 6
+  # 8N1 is ESPHome default; XY-SK120 needs no parity/flow control.
+
+modbus:
+  id: modbus_bus
+  uart_id: uart_modbus
+
+modbus_controller:
+  - id: sk120
+    address: ${modbus_addr}
+    modbus_id: modbus_bus
+    update_interval: ${poll_ms}
+    # Fewer ranges = fewer frames/cycle = no "Poll refused by hub" (continuous
+    # polls cap at 2 pending; a range the UART can't drain in time skips a tick).
+    # ESPHome groups only CONTIGUOUS defined addresses into one command, so the
+    # gap regs 0x06–0x0C and 0x0F–0x10 are declared as internal bridge sensors
+    # below — that makes 0x02–0x12 contiguous -> ONE FC03 read. (register_count
+    # does NOT merge defined sensors across a gap; verified on-device.) V_SET/
+    # I_SET (0x00–0x01) poll as their own small range; model/version skip:600.
+
+# ---- Telemetry (FC03 holding reads) ----------------------------------------
+sensor:
+  - platform: modbus_controller
+    modbus_controller_id: sk120
+    name: "Output Voltage"
+    id: sk_vout
+    register_type: holding
+    address: 0x0002
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    accuracy_decimals: 2
+    device_class: voltage
+    filters: [multiply: 0.01]
+
+  - platform: modbus_controller
+    modbus_controller_id: sk120
+    name: "Output Current"
+    id: sk_iout
+    register_type: holding
+    address: 0x0003
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    accuracy_decimals: 3
+    device_class: current
+    filters: [multiply: 0.001]
+
+  - platform: modbus_controller
+    modbus_controller_id: sk120
+    name: "Output Power"
+    id: sk_power
+    register_type: holding
+    address: 0x0004
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    accuracy_decimals: 2
+    device_class: power
+    filters: [multiply: 0.01]
+
+  # Rob: read Vin on a regular interval — PD-trigger source (observed 20.06 V @ 20V USB-C PD).
+  - platform: modbus_controller
+    modbus_controller_id: sk120
+    name: "Input Voltage"
+    id: sk_vin
+    register_type: holding
+    address: 0x0005
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    accuracy_decimals: 2
+    device_class: voltage
+    filters: [multiply: 0.01]
+
+  # Internal temp. S_WORD so sub-zero reads don't wrap. Unit tracks REG_F_C (0x13);
+  # assumes device set to °C (factory). ×0.1.
+  - platform: modbus_controller
+    modbus_controller_id: sk120
+    name: "Internal Temp"
+    id: sk_temp_int
+    register_type: holding
+    address: 0x000D
+    value_type: S_WORD
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    device_class: temperature
+    filters: [multiply: 0.1]
+
+  # Rob: external NTC port (REG_T_EX). Nothing wired yet — raw 8888 (=888.8)
+  # observed as the no-probe sentinel until the thermistor is connected. S_WORD.
+  - platform: modbus_controller
+    modbus_controller_id: sk120
+    name: "External NTC Temp"
+    id: sk_temp_ext
+    register_type: holding
+    address: 0x000E
+    value_type: S_WORD
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    device_class: temperature
+    filters: [multiply: 0.1]
+
+  # --- Internal bridge regs: declared only to make 0x02–0x12 contiguous so the
+  # live telemetry collapses to ONE FC03 read. Not exposed (internal: true).
+  # 0x06–0x09 = AH/WH low/high, 0x0A–0x0C = output time h/m/s, 0x0F = lock,
+  # 0x10 = protect. Promote any of these to a named sensor later if useful
+  # (AH/WH are handy for charge coulomb/energy tracking).
+  - {platform: modbus_controller, modbus_controller_id: sk120, id: sk_r06, internal: true, register_type: holding, address: 0x0006, value_type: U_WORD}
+  - {platform: modbus_controller, modbus_controller_id: sk120, id: sk_r07, internal: true, register_type: holding, address: 0x0007, value_type: U_WORD}
+  - {platform: modbus_controller, modbus_controller_id: sk120, id: sk_r08, internal: true, register_type: holding, address: 0x0008, value_type: U_WORD}
+  - {platform: modbus_controller, modbus_controller_id: sk120, id: sk_r09, internal: true, register_type: holding, address: 0x0009, value_type: U_WORD}
+  - {platform: modbus_controller, modbus_controller_id: sk120, id: sk_r0a, internal: true, register_type: holding, address: 0x000A, value_type: U_WORD}
+  - {platform: modbus_controller, modbus_controller_id: sk120, id: sk_r0b, internal: true, register_type: holding, address: 0x000B, value_type: U_WORD}
+  - {platform: modbus_controller, modbus_controller_id: sk120, id: sk_r0c, internal: true, register_type: holding, address: 0x000C, value_type: U_WORD}
+  - {platform: modbus_controller, modbus_controller_id: sk120, id: sk_r0f, internal: true, register_type: holding, address: 0x000F, value_type: U_WORD}
+  - {platform: modbus_controller, modbus_controller_id: sk120, id: sk_r10, internal: true, register_type: holding, address: 0x0010, value_type: U_WORD}
+
+  # Identity / static — own range, polled rarely.
+  - platform: modbus_controller
+    modbus_controller_id: sk120
+    name: "Model ID"
+    id: sk_model
+    register_type: holding
+    address: 0x0016
+    value_type: U_WORD
+    entity_category: diagnostic
+    skip_updates: 600       # expect 22873 for XY-SK120
+
+  - platform: modbus_controller
+    modbus_controller_id: sk120
+    name: "Firmware Version"
+    id: sk_version
+    register_type: holding
+    address: 0x0017
+    value_type: U_WORD
+    entity_category: diagnostic
+    skip_updates: 600
+
+# ---- Status flags (attach to the 0x02–0x12 live range by address) ----------
+binary_sensor:
+  - platform: modbus_controller
+    modbus_controller_id: sk120
+    name: "CV Mode"          # REG_CVCC 0x11: 1 = CV, 0 = CC
+    register_type: holding
+    address: 0x0011
+    bitmask: 1
+
+  - platform: modbus_controller
+    modbus_controller_id: sk120
+    name: "Output State"     # REG_ONOFF 0x12 read mirror for the panel
+    register_type: holding
+    address: 0x0012
+    bitmask: 1
+
+# ---- Controls (FC06 holding writes) ----------------------------------------
+switch:
+  - platform: modbus_controller
+    modbus_controller_id: sk120
+    name: "Output Enable"    # REG_ONOFF 0x12 — SAFETY: drives live output
+    register_type: holding
+    address: 0x0012
+    bitmask: 1
+
+number:
+  - platform: modbus_controller
+    modbus_controller_id: sk120
+    name: "Set Voltage"      # REG_V_SET 0x00, stores V×100
+    register_type: holding
+    address: 0x0000
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 0
+    max_value: ${vset_max}
+    step: 0.01
+    multiply: 100
+    skip_updates: 120   # we command this; readback ~60s avoids the 2nd poll range colliding (range 0x0 refusals)
+
+  - platform: modbus_controller
+    modbus_controller_id: sk120
+    name: "Set Current"      # REG_I_SET 0x01, stores A×1000
+    register_type: holding
+    address: 0x0001
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    min_value: 0
+    max_value: ${iset_max}
+    step: 0.001
+    multiply: 1000
+    skip_updates: 120   # see Set Voltage
