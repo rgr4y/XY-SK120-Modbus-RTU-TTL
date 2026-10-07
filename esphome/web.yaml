@@ -1,0 +1,16 @@
+# Web UI serving package. Adds ONLY web_server local-embed + the custom panel
+# handler registration. Auth/port/version live in common.yaml — do not restate.
+web_server:
+  local: true   # embed native ESPHome page for /esphome; no CDN
+  include_internal: false   # keep internal plumbing off the /events stream
+
+esphome:
+  includes:
+    - web/panel_handler.h
+    - web/panel_html_gz.h     # generated; both MUST be listed or the build fails
+  on_boot:
+    - priority: 300           # register BEFORE native root handler (as D3806); -99 lost "/" to native
+      then:
+        - lambda: |-
+            esphome::web_server_base::global_web_server_base->add_handler(new PanelHandler());
+            esphome::web_server_base::global_web_server_base->add_handler(new ESPHomeHandler());

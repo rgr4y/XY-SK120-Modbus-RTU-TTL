@@ -1,3 +1,4 @@
 secrets.yaml
 .esphome/
 *.bin
+web/panel_html_gz.h

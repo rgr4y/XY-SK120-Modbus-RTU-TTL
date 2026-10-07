@@ -62,6 +62,7 @@ substitutions:
 
 packages:
   base: !include common.yaml
+  web: !include web.yaml
 
 esp32:
   variant: esp32c3
@@ -78,11 +79,6 @@ logger:
     modbus_controller.sensor: WARN   # "Sensor new state" telemetry reads
     modbus_controller.switch: WARN
     sensor: WARN                     # sensor state publishes
-
-# Override common.yaml's include_internal: hide internal plumbing (sk_onoff raw
-# bit, bridge regs sk_r06–sk_r10) from the web UI.
-web_server:
-  include_internal: false
 
 # Boot policy. Engine is gated on cj_booted so the 1s tick can't act before
 # this runs. boot_output_off:true = always come up output-off (safety).
