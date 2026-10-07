@@ -873,7 +873,7 @@
     sim_cycle: {id:'simCycleBtn', label:'SIM CYCLE'}
   };
   var swOn = {output:false, charge:false, sim_cycle:false};
-  var swPending = {};
+  var swCtl = {};   // per-obj {controller,timer,desired} in-flight toggle; a new toggle cancels the prior
   function swRender(obj, on){
     swOn[obj] = on;
     var b = el(SW[obj].id);
@@ -882,55 +882,50 @@
       b.className = 'onoff ' + (on ? 'on' : 'off');
     }
     if(obj === 'sim_cycle') el('simMsg').style.display = on ? '' : 'none';
+    if(swCtl[obj] && on === swCtl[obj].desired){   // SSE confirmed the pending toggle — clear the wait
+      clearTimeout(swCtl[obj].timer); pendingReads.delete(swCtl[obj].controller);
+      if(b) b.title = ''; swCtl[obj] = null;
+    }
   }
 
   async function toggleSwitch(obj){
-    if(swPending[obj]) return;
     syncTelemetryFocus();
     var key = 'switch/' + obj;
     var button = el(SW[obj].id);
     var desired = !swOn[obj];
+    // Cancel any in-flight toggle for THIS switch so rapid clicks don't stack
+    // requests — the newest intent wins.
+    if(swCtl[obj]){ swCtl[obj].controller.abort(); clearTimeout(swCtl[obj].timer); pendingReads.delete(swCtl[obj].controller); }
     var controller = new AbortController();
     pendingReads.add(controller);
-    var timer = setTimeout(function(){ controller.abort(); }, 4000);
-    swPending[obj] = true;
-    button.disabled = true;
+    swCtl[obj] = {controller:controller, timer:null, desired:desired};
     button.title = 'Waiting for device confirmation';
     try{
       var response = await fetch(urlPath('switch', obj) + '/' +
-        (desired ? 'turn_on' : 'turn_off'), {
-        method:'POST', credentials:'same-origin', signal:controller.signal
-      });
+        (desired ? 'turn_on' : 'turn_off'),
+        {method:'POST', credentials:'same-origin', signal:controller.signal});
       if(!response.ok) throw new Error(SW[obj].label + ' command HTTP ' + response.status);
-      // ESPHome acknowledges POST before its deferred switch action runs
-      // (Output ON returns before the soft-start ramp completes): poll, never
-      // optimistically flip.
-      for(var attempt = 0; attempt < 10; attempt++){
-        await new Promise(function(resolve){ setTimeout(resolve, 100); });
-        if(!telemetryActive || controller.signal.aborted) throw new Error('confirmation interrupted');
-        response = await fetch(urlPath('switch', obj) + '?detail=all', {
-          credentials:'same-origin', cache:'no-store', signal:controller.signal
-        });
-        if(!response.ok) throw new Error('confirmation HTTP ' + response.status);
-        var data = await response.json();
-        if(resolveKey(data) !== key || typeof data.value !== 'boolean')
-          throw new Error('Invalid confirmation');
-        if(!telemetryActive || controller.signal.aborted) throw new Error('confirmation interrupted');
-        store[key] = data;
-        diagIngest(data);
-        swRender(obj, data.value);
-        if(data.value === desired){ button.title = ''; return; }
-      }
-      throw new Error('Device did not reach the requested state');
+      // No polling. The SSE /events stream delivers the switch state (onState ->
+      // swRender) when the device actually changes — Output ON lags the soft-start
+      // ramp and the stream reports it when it lands. Fallback timer: if the device
+      // hasn't reached `desired` within 8s, revert the button to its real state.
+      swCtl[obj].timer = setTimeout(function(){
+        pendingReads.delete(controller);
+        if(swCtl[obj] && swCtl[obj].controller === controller){
+          if(swOn[obj] !== desired){
+            var d = store[key]; if(d) swRender(obj, !!d.value);
+            button.title = SW[obj].label + ': device did not confirm';
+          } else button.title = '';
+          swCtl[obj] = null;
+        }
+      }, 8000);
     }catch(error){
-      console.error(SW[obj].label + ' control failed', error);
-      button.title = SW[obj].label + ' control failed: ' + error.message;
-      button.textContent = SW[obj].label + '  ' + (swOn[obj] ? 'ON' : 'OFF') + ' · ERROR';
-    }finally{
-      clearTimeout(timer);
       pendingReads.delete(controller);
-      swPending[obj] = false;
-      button.disabled = false;
+      if(swCtl[obj] && swCtl[obj].controller === controller) swCtl[obj] = null;
+      if(!controller.signal.aborted){   // abort = superseded by a newer toggle, not an error
+        console.error(SW[obj].label + ' control failed', error);
+        button.title = SW[obj].label + ' control failed: ' + error.message;
+      }
     }
   }
 
