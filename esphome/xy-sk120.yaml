@@ -26,11 +26,12 @@ substitutions:
   iset_max: "6.0"          # SK120 hard max 6A (120W; power-limit bites >20V)
 
   # -- Output-enable soft-start (avoids boost inrush collapsing a weak input
-  # like a PD trigger). On enable with target > Vin: command Vin, enable, then
-  # step V_SET up. Tune step/interval to your input's inrush tolerance.
-  ss_step: "0.5"           # V per step
-  ss_interval: "150ms"     # time between steps
-  ss_margin: "1.0"         # V; target within Vin+margin = no ramp (buck region)
+  # like a PD trigger). The boost stage engaging AT enable is what trips PD, so a
+  # cold enable commands V_SET below Vin first (output comes up in BUCK = benign),
+  # then the ramp steps up THROUGH Vin into boost gradually. Tune to your input.
+  ss_step: "2"          # V per step (smaller = less per-step boost inrush)
+  ss_interval: "250ms"    # time between steps
+  ss_boot_drop: "2.0"      # V below Vin to enable at (keeps cold enable in buck)
 
   # -- Lead-acid charge engine (SET per pack before charging a real battery) --
   # Carried from dps150 charge/profiles.js (leadacid) + engine.js state machine.
@@ -68,6 +69,16 @@ esp32:
   # XIAO ESP32-C3 external u.FL antenna is hardware-selected (no GPIO switch,
   # unlike the C6). Switched off the C6 for WiFi stability.
 
+# Quiet only the telemetry READ flood (sensor polls, poll-refused). Keep the
+# register WRITES (modbus.number) + number state at DEBUG so the ramp is visible.
+logger:
+  logs:
+    modbus: WARN                     # buffer/poll-refused spam
+    modbus_controller: WARN          # "Poll refused by hub"
+    modbus_controller.sensor: WARN   # "Sensor new state" telemetry reads
+    modbus_controller.switch: WARN
+    sensor: WARN                     # sensor state publishes
+
 # Override common.yaml's include_internal: hide internal plumbing (sk_onoff raw
 # bit, bridge regs sk_r06–sk_r10) from the web UI.
 web_server:
@@ -94,6 +105,15 @@ esphome:
                   id(cj_stage) = 0;   // restart from IDLE; engine re-runs preflight if cj_run
                   if (id(cj_run)) id(cj_status) = std::string("resuming charge after boot");
         - lambda: 'id(cj_booted) = true;'   # release the engine tick
+
+# Kill the output before an OTA — never flash with a live charge running.
+ota:
+  - id: !extend ota_esphome
+    on_begin:
+      then:
+        - lambda: 'id(cj_run) = false;'
+        - script.stop: softstart_on
+        - switch.turn_off: sk_onoff
 
 time:
   - platform: sntp
@@ -130,6 +150,10 @@ globals:
     type: float
     restore_value: no
     initial_value: '0'
+  - id: ss_cur            # soft-start local ramp value (NOT device readback — avoids infinite loop)
+    type: float
+    restore_value: no
+    initial_value: '0'
   # ---- charge engine state ----
   - {id: cj_run,      type: bool,     restore_value: yes, initial_value: 'false'} # Charge on — PERSISTED for resume-after-boot
   - {id: cj_booted,   type: bool,     restore_value: no, initial_value: 'false'}  # boot policy applied -> engine may run
@@ -144,30 +168,67 @@ globals:
 # inrush). Target > Vin -> command Vin, enable, then step V_SET up to target.
 script:
   - id: softstart_on
-    mode: restart          # re-enable restarts the ramp cleanly
+    mode: single           # ignore re-triggers while running — prevents g_target ratchet/runaway
     then:
-      - lambda: 'id(g_target) = id(set_voltage).state;'
+      # Capture target once from v_target (stable), clamp to the hard ceiling.
+      # Ramp floor = present Vout if already outputting (a LIVE raise, e.g. 20->28
+      # while on), else Vin (buck floor for a cold enable). V_SET is NEVER written
+      # straight up to the target — a boost step up collapses a weak source / trips
+      # PD, which reboots the device. Every raise walks up through this ramp.
+      - lambda: |-
+          float tgt = id(v_target).state;
+          if (tgt > ${vset_max}) tgt = ${vset_max};
+          id(g_target) = tgt;
+          // Cold enable: start BELOW Vin so output energizes in buck (boost
+          // engaging at enable is what trips PD). Live raise: start at present Vout.
+          id(ss_cur) = id(sk_onoff).state ? id(sk_vout).state
+                                          : (id(sk_vin).state - ${ss_boot_drop});
+          if (id(ss_cur) < 0) id(ss_cur) = 0;
       - if:
           condition:
-            lambda: 'return id(g_target) <= id(sk_vin).state + ${ss_margin};'
+            # ramp only when the target is more than one step above the floor.
+            lambda: 'return id(g_target) <= id(ss_cur) + ${ss_step};'
           then:
-            - switch.turn_on: sk_onoff
+            # within one step: cold buck enable, or lowering while on (buck down is
+            # safe to command directly). Enable only if currently off.
+            - number.set: {id: vset_dev, value: !lambda 'return id(g_target);'}
+            - if:
+                condition:
+                  lambda: 'return !id(sk_onoff).state;'
+                then:
+                  - switch.turn_on: sk_onoff
           else:
-            - number.set:
-                id: set_voltage
-                value: !lambda 'return id(sk_vin).state;'
+            # Boost ramp from ss_cur (floor) up to target with a local counter —
+            # never measured Vout or device readback. The device may be PRE-LOADED
+            # with a high setpoint (user set V while OFF); enabling applies it the
+            # instant ONOFF=1, so we MUST drive V_SET down to the floor and let the
+            # device actually latch it (one full poll) BEFORE enabling — else it
+            # boosts straight to target and trips PD / resets.
+            - number.set: {id: vset_dev, value: !lambda 'return id(ss_cur);'}
+            - delay: ${poll_ms}
+            - number.set: {id: vset_dev, value: !lambda 'return id(ss_cur);'}
             - delay: ${ss_interval}
-            - switch.turn_on: sk_onoff
-            - delay: ${ss_interval}
+            - if:
+                condition:
+                  lambda: 'return !id(sk_onoff).state;'
+                then:
+                  - switch.turn_on: sk_onoff
+                  # energize moment is the most PD-sensitive — settle longer here
+                  - delay: ${poll_ms}
+            # while re-checks the condition against the live ss_cur each pass —
+            # correct for mutating state. (A templated repeat.count is re-evaluated
+            # every iteration too, so deriving it from ss_cur made it count DOWN
+            # while repeat's own index counted UP; they met at the midpoint and the
+            # ramp stopped at (Vin+target)/2. Classic.) Monotonic += with clamp
+            # guarantees termination.
             - while:
                 condition:
-                  lambda: 'return id(set_voltage).state < id(g_target) - 0.001;'
+                  lambda: 'return id(ss_cur) < id(g_target) - 0.001f;'
                 then:
-                  - number.set:
-                      id: set_voltage
-                      value: !lambda |-
-                        float nv = id(set_voltage).state + ${ss_step};
-                        return nv > id(g_target) ? id(g_target) : nv;
+                  - lambda: |-
+                      id(ss_cur) += ${ss_step};
+                      if (id(ss_cur) > id(g_target)) id(ss_cur) = id(g_target);
+                  - number.set: {id: vset_dev, value: !lambda 'return id(ss_cur);'}
                   - delay: ${ss_interval}
 
 # ---- Telemetry (FC03 holding reads) ----------------------------------------
@@ -293,7 +354,31 @@ sensor:
     accuracy_decimals: 1
     device_class: power
     update_interval: 1s
-    lambda: 'return id(set_voltage).state * id(set_current).state;'
+    lambda: 'return id(v_target).state * id(set_current).state;'
+
+  # Device's actual REG_V_SET (reflects front-panel edits + device clamp),
+  # decoupled from the target so readback can't corrupt the ramp.
+  - platform: modbus_controller
+    modbus_controller_id: sk120
+    name: "Device V_SET"
+    id: device_vset
+    register_type: holding
+    address: 0x0000
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    accuracy_decimals: 2
+    skip_updates: 3
+    filters: [multiply: 0.01]
+    # Mirror front-panel edits into the target, but ONLY when fully idle (output
+    # off, no charge, no ramp). NOTE: the device clamps REG_V_SET to ~OVP, and
+    # that clamp reads back here too — raise OVP so a full-scale target sticks,
+    # otherwise this pulls Set Voltage down to the clamp.
+    on_value:
+      - if:
+          condition:
+            lambda: 'return !id(cj_run) && !id(softstart_on).is_running() && !id(sk_onoff).state && fabsf(x - id(v_target).state) > 0.05f;'
+          then:
+            - number.set: {id: v_target, value: !lambda 'return x;'}
 
 # ---- Status flags (attach to the 0x02–0x12 live range by address) ----------
 binary_sensor:
@@ -348,20 +433,50 @@ switch:
       - switch.turn_off: sk_onoff
 
 number:
+  # User target voltage. The soft-start ramp READS this and never writes it, so
+  # device readback/clamp can't corrupt the target. Actual register writes go to
+  # vset_dev; the device's real value shows in the "Device V_SET" sensor.
+  - platform: template
+    name: "Set Voltage"
+    id: v_target
+    unit_of_measurement: "V"
+    mode: box
+    optimistic: true
+    min_value: 0
+    max_value: ${vset_max}
+    step: 0.01
+    initial_value: 14.4
+    on_value:
+      # Mid-ramp: ignore, the ramp owns the register.
+      # Output ON: run the soft-start so a raise WALKS up (and a drop buck-steps
+      #   down) — never a direct jump to the device (that's what rebooted it).
+      # Output OFF: just store the setpoint on the device; no output, no inrush.
+      - if:
+          condition:
+            lambda: 'return !id(softstart_on).is_running();'
+          then:
+            - if:
+                condition:
+                  lambda: 'return id(sk_onoff).state;'
+                then:
+                  - script.execute: softstart_on
+                else:
+                  - number.set: {id: vset_dev, value: !lambda 'return id(v_target).state;'}
+
+  # Actual REG_V_SET writer — hidden. Written by the ramp, engine, and the
+  # apply-while-on path above. Write-mostly (reflect is the Device V_SET sensor).
   - platform: modbus_controller
     modbus_controller_id: sk120
-    name: "Set Voltage"      # REG_V_SET 0x00, stores V×100
-    id: set_voltage
+    id: vset_dev
+    internal: true
     register_type: holding
     address: 0x0000
     value_type: U_WORD
-    unit_of_measurement: "V"
-    mode: box                # free numeric input box (not slider)
     min_value: 0
     max_value: ${vset_max}
     step: 0.01
     multiply: 100
-    skip_updates: 120   # we command this; readback ~60s avoids the 2nd poll range colliding (range 0x0 refusals)
+    skip_updates: 600
 
   - platform: modbus_controller
     modbus_controller_id: sk120
@@ -376,7 +491,7 @@ number:
     max_value: ${iset_max}
     step: 0.001
     multiply: 1000
-    skip_updates: 120   # see Set Voltage
+    skip_updates: 1     # see Set Voltage
 
 # ---- Lead-acid charge engine (carried from dps150 charge/engine.js) ---------
 # Stages: IDLE -> CC (bulk) -> CV (absorb) -> FLOAT (hold). Runs on-device every
@@ -472,9 +587,9 @@ interval:
                 if (v < minV || v > maxV)   { id(cj_stage) = 5; id(cj_status) = std::string("pack V out of range"); break; }
                 if (v > absorbV * OV_MARGIN){ id(cj_stage) = 5; id(cj_status) = std::string("overvolt at start"); break; }
               }
-              id(set_voltage).make_call().set_value(absorbV).perform();
+              id(v_target).make_call().set_value(absorbV).perform();   // target for the ramp
               id(set_current).make_call().set_value(chargeA).perform();
-              id(softstart_on).execute();                // ramp V + enable output
+              id(softstart_on).execute();                // ramp V_SET to absorb + enable output
               id(cj_t0) = now; id(cj_stage_t0) = now; id(cj_taper_t0) = -1; id(cj_srclow_t0) = -1;
               id(cj_stage) = 1; id(cj_status) = std::string("CC (bulk)");
               break;
@@ -489,7 +604,8 @@ interval:
               if (i < taperA) {
                 if (id(cj_taper_t0) < 0) id(cj_taper_t0) = (int32_t) now;
                 else if (now - (uint32_t) id(cj_taper_t0) >= SETTLE_MS) {
-                  id(set_voltage).make_call().set_value(floatV).perform();
+                  id(v_target).make_call().set_value(floatV).perform();    // lowering — write device directly, no ramp
+                  id(vset_dev).make_call().set_value(floatV).perform();
                   id(cj_stage) = 3; id(cj_stage_t0) = now; id(cj_taper_t0) = -1;
                   id(cj_status) = std::string("FLOAT");
                 }
