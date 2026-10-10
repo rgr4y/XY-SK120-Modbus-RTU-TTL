@@ -37,3 +37,5 @@ partitions.csv.md5
 
 # temp paste file
 temp-paste-file
+# Local design doc — keep on disk, never commit
+docs/2026-10-07-xy-sk120-webui-port-design.md
